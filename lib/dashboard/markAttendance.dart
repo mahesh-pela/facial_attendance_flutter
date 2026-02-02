@@ -17,9 +17,11 @@ class MarkAttendance extends StatefulWidget {
   State<MarkAttendance> createState() => _MarkAttendanceState();
 }
 
-class _MarkAttendanceState extends State<MarkAttendance> {
+class _MarkAttendanceState extends State<MarkAttendance> with TickerProviderStateMixin {
   late CameraController _cameraController;
   late List<CameraDescription> _cameras;
+  late AnimationController _scanController;
+  late AnimationController _successController;
 
   bool _isInitialized = false;
   bool _isProcessing = false;
@@ -31,7 +33,6 @@ class _MarkAttendanceState extends State<MarkAttendance> {
   int _faceDetectionCount = 0;
   static const int _requiredStableFrames = 3;
 
-  /// FAST detector for streaming
   final FaceDetector _streamDetector = FaceDetector(
     options: FaceDetectorOptions(
       performanceMode: FaceDetectorMode.fast,
@@ -40,7 +41,6 @@ class _MarkAttendanceState extends State<MarkAttendance> {
     ),
   );
 
-  /// ACCURATE detector for captured image
   final FaceDetector _photoDetector = FaceDetector(
     options: FaceDetectorOptions(
       performanceMode: FaceDetectorMode.accurate,
@@ -52,7 +52,7 @@ class _MarkAttendanceState extends State<MarkAttendance> {
   late int _embeddingSize;
 
   String _verificationStatus = 'Position your face in the frame';
-  Color _statusColor = Colors.blue;
+  Color _statusColor = const Color(0xFF60a5fa);
 
   final Dio _dio = Dio(BaseOptions(
     baseUrl: 'http://103.250.132.138:8886/api/v1',
@@ -65,6 +65,16 @@ class _MarkAttendanceState extends State<MarkAttendance> {
     super.initState();
     _initializeCamera();
     _loadModel();
+
+    _scanController = AnimationController(
+      duration: const Duration(milliseconds: 2000),
+      vsync: this,
+    )..repeat();
+
+    _successController = AnimationController(
+      duration: const Duration(milliseconds: 500),
+      vsync: this,
+    );
   }
 
   @override
@@ -73,10 +83,10 @@ class _MarkAttendanceState extends State<MarkAttendance> {
     _streamDetector.close();
     _photoDetector.close();
     _interpreter.close();
+    _scanController.dispose();
+    _successController.dispose();
     super.dispose();
   }
-
-  // ================= CAMERA =================
 
   Future<void> _initializeCamera() async {
     _cameras = await availableCameras();
@@ -91,49 +101,36 @@ class _MarkAttendanceState extends State<MarkAttendance> {
     );
 
     await _cameraController.initialize();
-
     setState(() => _isInitialized = true);
     _startFaceDetection();
   }
 
-  // ================= MODEL =================
-
   Future<void> _loadModel() async {
     _interpreter = await Interpreter.fromAsset('assets/mobilefacenet.tflite');
     _embeddingSize = _interpreter.getOutputTensor(0).shape[1];
-    debugPrint('✅ Model loaded. Embedding size: $_embeddingSize');
   }
-
-  // ================= STREAMING FACE CHECK =================
 
   void _startFaceDetection() {
     if (!_isInitialized) return;
 
     int frameSkip = 0;
-
     _cameraController.startImageStream((image) async {
-      if (_isProcessing || _attendanceMarked) return;
+      if (_isProcessing || _attendanceMarked || _isDetecting) return;
 
       frameSkip++;
-      if (frameSkip % 10 != 0) return; // Process every 10th frame
+      if (frameSkip % 10 != 0) return;
 
       try {
-        final inputImage = _inputImageFromCameraImage(image);
-
-        if (_isDetecting) return;
         _isDetecting = true;
-
+        final inputImage = _inputImageFromCameraImage(image);
         final faces = await _streamDetector.processImage(inputImage);
-
-        _isDetecting = false;
 
         if (faces.isNotEmpty) {
           _faceDetectionCount++;
-
           setState(() {
             _faceDetected = true;
             _verificationStatus = 'Hold still... ($_faceDetectionCount/$_requiredStableFrames)';
-            _statusColor = Colors.green;
+            _statusColor = const Color(0xFF10b981);
           });
 
           if (_faceDetectionCount >= _requiredStableFrames) {
@@ -146,24 +143,23 @@ class _MarkAttendanceState extends State<MarkAttendance> {
           setState(() {
             _faceDetected = false;
             _verificationStatus = 'Position your face';
-            _statusColor = Colors.blue;
+            _statusColor = const Color(0xFF60a5fa);
           });
         }
       } catch (e) {
-        _isDetecting = false;
         debugPrint("Face detection Error: $e");
+      } finally {
+        _isDetecting = false;
       }
     });
   }
-
-  // ================= VERIFY FACE =================
 
   Future<void> _verifyFace() async {
     if (_attendanceMarked) return;
 
     setState(() {
       _verificationStatus = 'Capturing...';
-      _statusColor = Colors.yellow;
+      _statusColor = const Color(0xFFf59e0b);
     });
 
     try {
@@ -171,15 +167,10 @@ class _MarkAttendanceState extends State<MarkAttendance> {
       final bytes = await File(file.path).readAsBytes();
 
       setState(() {
-        _verificationStatus = 'Extracting face features...';
+        _verificationStatus = 'Extracting features...';
       });
 
       final embedding = await _generateFaceEmbedding(bytes);
-
-      // 🔥 DEBUG: Print embedding stats
-      debugPrint('📊 Embedding generated: ${embedding.length} dimensions');
-      debugPrint('📊 Sample values: ${embedding.take(5).toList()}');
-      debugPrint('📊 Min: ${embedding.reduce(math.min)}, Max: ${embedding.reduce(math.max)}');
 
       setState(() {
         _verificationStatus = 'Verifying identity...';
@@ -188,16 +179,12 @@ class _MarkAttendanceState extends State<MarkAttendance> {
       await _verifyWithBackend(embedding);
     } catch (e) {
       debugPrint('❌ Verification error: $e');
-      _resetAfterError(e.toString());
+      _resetAfterError(e.toString().replaceAll('Exception: ', ''));
     }
   }
 
-  // ================= EMBEDDING =================
-
   Future<List<double>> _generateFaceEmbedding(List<int> imageBytes) async {
     final image = img.decodeImage(Uint8List.fromList(imageBytes))!;
-
-    // Save temp file for ML Kit
     final temp = File('${Directory.systemTemp.path}/face_${DateTime.now().millisecondsSinceEpoch}.jpg')
       ..writeAsBytesSync(imageBytes);
 
@@ -205,7 +192,6 @@ class _MarkAttendanceState extends State<MarkAttendance> {
       InputImage.fromFilePath(temp.path),
     );
 
-    // Clean up temp file
     try {
       await temp.delete();
     } catch (_) {}
@@ -215,89 +201,61 @@ class _MarkAttendanceState extends State<MarkAttendance> {
     }
 
     final face = faces.first;
-    debugPrint('✅ Face detected. Confidence: ${face.headEulerAngleY}');
-
-    // Crop face with padding
     final padding = (face.boundingBox.width * 0.25).toInt();
     final x = (face.boundingBox.left - padding).clamp(0, image.width - 1).toInt();
     final y = (face.boundingBox.top - padding).clamp(0, image.height - 1).toInt();
-    final w = (face.boundingBox.width + padding * 2)
-        .clamp(1, image.width - x)
-        .toInt();
-    final h = (face.boundingBox.height + padding * 2)
-        .clamp(1, image.height - y)
-        .toInt();
+    final w = (face.boundingBox.width + padding * 2).clamp(1, image.width - x).toInt();
+    final h = (face.boundingBox.height + padding * 2).clamp(1, image.height - y).toInt();
 
     final cropped = img.copyCrop(image, x: x, y: y, width: w, height: h);
     final resized = img.copyResizeCropSquare(cropped, size: 112);
 
-    // Convert to model input
     final input = _imageToFloat32(resized);
     final output = List.filled(_embeddingSize, 0.0).reshape([1, _embeddingSize]);
-
     _interpreter.run(input, output);
 
-    // Extract and normalize embedding
     final rawEmbedding = List<double>.from(output.reshape([_embeddingSize]));
-
-    // 🔥 L2 Normalization (CRITICAL for cosine similarity)
-    final normalizedEmbedding = _l2Normalize(rawEmbedding);
-
-    return normalizedEmbedding;
+    return _l2Normalize(rawEmbedding);
   }
 
-  // 🔥 L2 Normalization - Makes cosine similarity work properly
   List<double> _l2Normalize(List<double> embedding) {
-    final norm = math.sqrt(
-        embedding.fold(0.0, (sum, val) => sum + val * val)
-    );
-
-    if (norm == 0) return embedding; // Avoid division by zero
-
+    final norm = math.sqrt(embedding.fold(0.0, (sum, val) => sum + val * val));
+    if (norm == 0) return embedding;
     return embedding.map((val) => val / norm).toList();
   }
 
   Uint8List _imageToFloat32(img.Image image) {
     final buffer = Float32List(112 * 112 * 3);
     int i = 0;
-
     for (int y = 0; y < 112; y++) {
       for (int x = 0; x < 112; x++) {
         final p = image.getPixel(x, y);
-        // Normalize to [-1, 1] range
         buffer[i++] = (p.r - 127.5) / 128;
         buffer[i++] = (p.g - 127.5) / 128;
         buffer[i++] = (p.b - 127.5) / 128;
       }
     }
-
     return buffer.buffer.asUint8List();
   }
 
-  // ================= BACKEND =================
-
   Future<void> _verifyWithBackend(List<double> embedding) async {
     try {
-      debugPrint('📤 Sending embedding to backend...');
-
       final res = await _dio.post('/verifyUser', data: {
         'faceEmbedding': embedding,
       });
 
-      debugPrint('📥 Backend response: ${res.data}');
-
       if (res.data['success'] == true) {
         _attendanceMarked = true;
+        await _successController.forward();
         final userName = res.data['user']['name'] ?? 'User';
         final similarity = res.data['similarity']?.toStringAsFixed(3) ?? 'N/A';
         _showSuccessDialog(userName, similarity);
       } else {
         final similarity = res.data['similarity']?.toStringAsFixed(3) ?? 'N/A';
-        _resetAfterError('Face not recognized\n(Similarity: $similarity)');
+        _resetAfterError('Face not recognized\n(Match: $similarity)');
       }
     } catch (e) {
-      debugPrint('❌ Backend error: $e');
-      _resetAfterError('Network error: ${e.toString()}');
+      _resetAfterError('Network error. Please try again.');
     }
   }
 
@@ -321,69 +279,146 @@ class _MarkAttendanceState extends State<MarkAttendance> {
     await showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (_) => AlertDialog(
-        title: const Row(
-          children: [
-            Icon(Icons.check_circle, color: Colors.green, size: 30),
-            SizedBox(width: 10),
-            Text('Success'),
-          ],
-        ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'Welcome, $name!',
-              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+      builder: (_) => Dialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        backgroundColor: Colors.transparent,
+        child: Container(
+          padding: const EdgeInsets.all(32),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(20),
+            gradient: const LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [Color(0xFF10b981), Color(0xFF059669)],
             ),
-            const SizedBox(height: 8),
-            Text('Attendance marked successfully'),
-            const SizedBox(height: 8),
-            Text(
-              'Match confidence: $similarity',
-              style: const TextStyle(fontSize: 12, color: Colors.grey),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('OK'),
           ),
-        ],
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                padding: const EdgeInsets.all(20),
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.2),
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(
+                  Icons.check,
+                  size: 48,
+                  color: Colors.white,
+                ),
+              ),
+              const SizedBox(height: 24),
+              const Text(
+                'Attendance Marked',
+                style: TextStyle(
+                  fontSize: 24,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.white,
+                ),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 12),
+              Text(
+                'Welcome, $name!',
+                style: const TextStyle(
+                  fontSize: 18,
+                  color: Colors.white,
+                ),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Match confidence: $similarity',
+                style: TextStyle(
+                  fontSize: 14,
+                  color: Colors.white.withOpacity(0.8),
+                ),
+              ),
+              const SizedBox(height: 32),
+              ElevatedButton(
+                onPressed: () {
+                  Navigator.pop(context);
+                  Navigator.pop(context);
+                },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.white,
+                  foregroundColor: const Color(0xFF10b981),
+                  padding: const EdgeInsets.symmetric(horizontal: 48, vertical: 16),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(30),
+                  ),
+                ),
+                child: const Text(
+                  'Done',
+                  style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
 
     _dialogOpen = false;
-    if (mounted) {
-      Navigator.pop(context);
-    }
   }
 
   Future<void> _showErrorDialog(String msg) {
     return showDialog(
       context: context,
-      builder: (_) => AlertDialog(
-        title: const Row(
-          children: [
-            Icon(Icons.error_outline, color: Colors.red, size: 30),
-            SizedBox(width: 10),
-            Text('Verification Failed'),
-          ],
-        ),
-        content: Text(msg),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Retry'),
+      builder: (_) => Dialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        child: Container(
+          padding: const EdgeInsets.all(32),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFef4444).withOpacity(0.1),
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(
+                  Icons.error_outline,
+                  size: 48,
+                  color: Color(0xFFef4444),
+                ),
+              ),
+              const SizedBox(height: 24),
+              const Text(
+                'Verification Failed',
+                style: TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              const SizedBox(height: 12),
+              Text(
+                msg,
+                style: const TextStyle(fontSize: 14, color: Colors.grey),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 24),
+              ElevatedButton(
+                onPressed: () => Navigator.pop(context),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFFef4444),
+                  padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 12),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
+                child: const Text('Try Again'),
+              ),
+            ],
           ),
-        ],
+        ),
       ),
     );
   }
-
-  // ================= IMAGE CONVERSION =================
 
   InputImage _inputImageFromCameraImage(CameraImage image) {
     final rotation = InputImageRotationValue.fromRawValue(
@@ -404,112 +439,264 @@ class _MarkAttendanceState extends State<MarkAttendance> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Mark Attendance'),
-        centerTitle: true,
-        backgroundColor: Colors.blueAccent,
-      ),
-      body: Stack(
+      backgroundColor: const Color(0xFF0f172a),
+      body: _isInitialized
+          ? Stack(
         children: [
-          // Camera Preview
-          if (_isInitialized)
-            Positioned.fill(
-              child: CameraPreview(_cameraController),
-            )
-          else
-            const Center(child: CircularProgressIndicator()),
-
-          // Overlay for face guide
-          Center(
-            child: Container(
-              width: 250,
-              height: 320,
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(150),
-                border: Border.all(
-                  color: _faceDetected
-                      ? Colors.green
-                      : Colors.white.withOpacity(0.3),
-                  width: 3,
+          // Full-screen camera preview with proper aspect ratio
+          Positioned.fill(
+            child: ClipRRect(
+              child: FittedBox(
+                fit: BoxFit.cover,
+                child: SizedBox(
+                  width: _cameraController.value.previewSize?.height ?? 1,
+                  height: _cameraController.value.previewSize?.width ?? 1,
+                  child: CameraPreview(_cameraController),
                 ),
               ),
-              child: _faceDetected
-                  ? const Center(
-                child: Icon(
-                  Icons.face,
-                  size: 80,
-                  color: Colors.green,
-                ),
-              )
-                  : null,
             ),
           ),
 
-          // Status overlay
-          Positioned(
-            bottom: 100,
-            left: 20,
-            right: 20,
+          // Gradient overlays
+          Positioned.fill(
             child: Container(
-              padding: const EdgeInsets.all(16),
               decoration: BoxDecoration(
-                color: Colors.black.withOpacity(0.7),
-                borderRadius: BorderRadius.circular(12),
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [
+                    Colors.black.withOpacity(0.7),
+                    Colors.transparent,
+                    Colors.black.withOpacity(0.8),
+                  ],
+                  stops: const [0.0, 0.4, 1.0],
+                ),
               ),
-              child: Column(
+            ),
+          ),
+
+          // Top bar
+          SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.all(20.0),
+              child: Row(
                 children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      if (_isProcessing)
-                        const SizedBox(
-                          width: 20,
-                          height: 20,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            color: Colors.white,
-                          ),
-                        )
-                      else
-                        Icon(
-                          _attendanceMarked
-                              ? Icons.check_circle
-                              : (_faceDetected ? Icons.verified : Icons.face),
-                          color: _statusColor,
-                          size: 24,
-                        ),
-                      const SizedBox(width: 10),
-                      Flexible(
-                        child: Text(
-                          _verificationStatus,
-                          style: TextStyle(
-                            color: _statusColor,
-                            fontSize: 16,
-                            fontWeight: FontWeight.bold,
-                          ),
-                          textAlign: TextAlign.center,
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 10),
-                  Text(
-                    _attendanceMarked
-                        ? 'You can go back now'
-                        : (_isProcessing
-                        ? 'Please wait...'
-                        : 'Center your face in the circle'),
-                    style: const TextStyle(
-                      color: Colors.white70,
-                      fontSize: 14,
+                  IconButton(
+                    onPressed: () => Navigator.pop(context),
+                    icon: const Icon(Icons.arrow_back_ios, color: Colors.white),
+                    style: IconButton.styleFrom(
+                      backgroundColor: Colors.white.withOpacity(0.15),
                     ),
-                    textAlign: TextAlign.center,
+                  ),
+                  const Spacer(),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withOpacity(0.15),
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: const Row(
+                      children: [
+                        Icon(Icons.security, color: Colors.white, size: 16),
+                        SizedBox(width: 8),
+                        Text(
+                          'Secure',
+                          style: TextStyle(color: Colors.white, fontSize: 12),
+                        ),
+                      ],
+                    ),
                   ),
                 ],
               ),
             ),
           ),
+
+          // Main content
+          Column(
+            children: [
+              const Spacer(),
+
+              // Title
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 32),
+                child: Text(
+                  'Mark Attendance',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 32,
+                    fontWeight: FontWeight.bold,
+                  ),
+                  textAlign: TextAlign.center,
+                ),
+              ),
+
+              const SizedBox(height: 60),
+
+              // Face scanning area
+              Center(
+                child: Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    // Scanning animation
+                    if (!_attendanceMarked)
+                      AnimatedBuilder(
+                        animation: _scanController,
+                        builder: (context, child) {
+                          return Container(
+                            width: 280,
+                            height: 350,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              border: Border.all(
+                                color: Colors.white.withOpacity(
+                                  0.3 * (1 - _scanController.value),
+                                ),
+                                width: 2,
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+
+                    // Face guide
+                    AnimatedContainer(
+                      duration: const Duration(milliseconds: 300),
+                      width: 260,
+                      height: 330,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        border: Border.all(
+                          color: _attendanceMarked
+                              ? const Color(0xFF10b981)
+                              : (_faceDetected
+                              ? const Color(0xFF10b981)
+                              : Colors.white),
+                          width: 3,
+                        ),
+                        boxShadow: [
+                          BoxShadow(
+                            color: (_attendanceMarked || _faceDetected
+                                ? const Color(0xFF10b981)
+                                : Colors.white)
+                                .withOpacity(0.5),
+                            blurRadius: 30,
+                            spreadRadius: 5,
+                          ),
+                        ],
+                      ),
+                      child: _attendanceMarked
+                          ? const Icon(
+                        Icons.check_circle,
+                        size: 100,
+                        color: Color(0xFF10b981),
+                      )
+                          : (_faceDetected
+                          ? const Icon(
+                        Icons.face,
+                        size: 80,
+                        color: Color(0xFF10b981),
+                      )
+                          : null),
+                    ),
+                  ],
+                ),
+              ),
+
+              const Spacer(),
+
+              // Status card
+              Container(
+                margin: const EdgeInsets.all(24),
+                padding: const EdgeInsets.all(24),
+                decoration: BoxDecoration(
+                  color: Colors.black.withOpacity(0.6),
+                  borderRadius: BorderRadius.circular(24),
+                  border: Border.all(
+                    color: Colors.white.withOpacity(0.1),
+                    width: 1,
+                  ),
+                ),
+                child: Column(
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        if (_isProcessing)
+                          Container(
+                            width: 24,
+                            height: 24,
+                            margin: const EdgeInsets.only(right: 12),
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              valueColor: AlwaysStoppedAnimation<Color>(_statusColor),
+                            ),
+                          )
+                        else
+                          Icon(
+                            _attendanceMarked
+                                ? Icons.check_circle
+                                : (_faceDetected
+                                ? Icons.verified_user
+                                : Icons.face_outlined),
+                            color: _statusColor,
+                            size: 28,
+                          ),
+                        const SizedBox(width: 12),
+                        Flexible(
+                          child: Text(
+                            _verificationStatus,
+                            style: TextStyle(
+                              color: _statusColor,
+                              fontSize: 18,
+                              fontWeight: FontWeight.w600,
+                            ),
+                            textAlign: TextAlign.center,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                      _attendanceMarked
+                          ? 'You can go back now'
+                          : (_isProcessing
+                          ? 'Please wait...'
+                          : 'Center your face in the circle'),
+                      style: TextStyle(
+                        color: Colors.white.withOpacity(0.7),
+                        fontSize: 14,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                  ],
+                ),
+              ),
+
+              const SizedBox(height: 20),
+            ],
+          ),
         ],
+      )
+          : Container(
+        color: const Color(0xFF0f172a),
+        child: const Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              CircularProgressIndicator(
+                color: Colors.white,
+              ),
+              SizedBox(height: 24),
+              Text(
+                'Initializing camera...',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 16,
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
