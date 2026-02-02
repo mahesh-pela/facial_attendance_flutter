@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 import 'dart:io';
@@ -21,6 +22,9 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
   late List<CameraDescription> _cameras;
   late AnimationController _pulseController;
   late AnimationController _captureController;
+  Timer? _faceDetectionTimer;
+  bool _faceDetectedInPosition = false;
+  bool _isDetectionInProgress = false;
 
   bool _isInitialized = false;
   bool _isProcessing = false;
@@ -50,6 +54,22 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
     receiveTimeout: const Duration(seconds: 30),
   ));
 
+  // Auto-capture variables
+  int _currentCaptureIndex = 0;
+  final List<String> _captureInstructions = [
+    'Look straight at the camera',
+    'Turn your face slightly RIGHT',
+    'Turn your face slightly LEFT',
+  ];
+  bool _isAutoCaptureActive = false;
+  int _instructionViolationCount = 0;
+  static const int _maxViolations = 5;
+
+  // Circle boundaries for landmark validation (in percentage of screen)
+  static const double _circleCenterX = 0.5;
+  static const double _circleCenterY = 0.4;
+  static const double _circleRadiusPercent = 0.35; // 35% of width
+
   @override
   void initState() {
     super.initState();
@@ -71,6 +91,7 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
 
   @override
   void dispose() {
+    _faceDetectionTimer?.cancel();
     _cameraController.dispose();
     _photoDetector.close();
     _interpreter.close();
@@ -96,6 +117,9 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
 
     await _cameraController.initialize();
     setState(() => _isInitialized = true);
+
+    // Start auto-capture sequence
+    _startAutoCaptureSequence();
   }
 
   Future<void> _loadModel() async {
@@ -103,39 +127,161 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
     _embeddingSize = _interpreter.getOutputTensor(0).shape[1];
   }
 
-  Future<void> _captureFaceEmbedding() async {
-    if (_isCapturing || _capturedEmbeddings.length >= _requiredEmbeddings) {
+  void _startAutoCaptureSequence() {
+    setState(() {
+      _isAutoCaptureActive = true;
+      _currentCaptureIndex = 0;
+      _instructionViolationCount = 0;
+      _faceDetectedInPosition = false;
+    });
+
+    // start continuous face detection
+    _startContinuousFaceDetection();
+  }
+
+  void _startContinuousFaceDetection() {
+    _faceDetectionTimer?.cancel();
+
+    _faceDetectionTimer = Timer.periodic(const Duration(milliseconds: 700), (timer) async {
+      if (!_isAutoCaptureActive || _isCapturing || _currentCaptureIndex >= _requiredEmbeddings) {
+        timer.cancel();
+        return;
+      }
+
+      // Skip if previous detection is still in progress
+      if (_isDetectionInProgress) {
+        return;
+      }
+
+      // Quick face check without taking picture
+      try {
+        _isDetectionInProgress = true;
+
+        final image = await _cameraController.takePicture();
+        final bytes = await File(image.path).readAsBytes();
+        final result = await _quickFaceValidation(bytes);
+
+        if (result) {
+          // Face detected in correct position - attempt capture
+          timer.cancel();
+          _isDetectionInProgress = false;
+          await _attemptAutoCapture();
+
+          // Restart detection after capture attempt
+          if (_isAutoCaptureActive && _currentCaptureIndex < _requiredEmbeddings) {
+            Future.delayed(const Duration(milliseconds: 700), () {
+              _startContinuousFaceDetection();
+            });
+          }
+        }
+        else{
+          _isDetectionInProgress = false;
+        }
+      } catch (e) {
+        // Continue checking
+        _isDetectionInProgress = false;
+      }
+    });
+  }
+
+  Future<bool> _quickFaceValidation(List<int> imageBytes) async {
+    try {
+      final image = img.decodeImage(Uint8List.fromList(imageBytes))!;
+      final temp = File('${Directory.systemTemp.path}/face_check_${DateTime.now().millisecondsSinceEpoch}.jpg')
+        ..writeAsBytesSync(imageBytes);
+
+      final faces = await _photoDetector.processImage(
+        InputImage.fromFilePath(temp.path),
+      );
+
+      try {
+        await temp.delete();
+      } catch (_) {}
+
+      if (faces.isEmpty) return false;
+
+      final face = faces.first;
+
+      // Quick validation - check if face is in position
+      final inCircle = _areLandmarksInCircle(face, image.width.toDouble(), image.height.toDouble());
+      final correctPose = _isCorrectHeadPose(face);
+
+      return inCircle && correctPose;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  Future<void> _attemptAutoCapture() async {
+    if (!_isAutoCaptureActive || _currentCaptureIndex >= _requiredEmbeddings) {
       return;
     }
 
+    if (_isCapturing) return;
+
     setState(() => _isCapturing = true);
-    await _captureController.forward();
 
     try {
       final file = await _cameraController.takePicture();
       final bytes = await File(file.path).readAsBytes();
-      final embedding = await _generateFaceEmbedding(bytes);
 
-      setState(() {
-        _capturedEmbeddings.add(embedding);
-      });
+      // Validate and generate embedding
+      final result = await _validateAndGenerateEmbedding(bytes);
 
-      // Show success animation
-      await _captureController.reverse();
+      if (result['success'] == true) {
+        // Success - capture animation
+        await _captureController.forward();
 
-      if (_capturedEmbeddings.length >= _requiredEmbeddings) {
-        await Future.delayed(const Duration(milliseconds: 500));
-        setState(() => _showForm = true);
+        setState(() {
+          _capturedEmbeddings.add(result['embedding']);
+          _currentCaptureIndex++;
+          _instructionViolationCount = 0;
+        });
+
+        await _captureController.reverse();
+
+        if (_capturedEmbeddings.length >= _requiredEmbeddings) {
+          setState(() => _isAutoCaptureActive = false);
+          _faceDetectionTimer?.cancel();
+          await Future.delayed(const Duration(milliseconds: 500));
+          setState(() => _showForm = true);
+        }
+      } else {
+        // Validation failed
+        _instructionViolationCount++;
+
+        if (_instructionViolationCount >= _maxViolations) {
+          _faceDetectionTimer?.cancel();
+          _handleMaxViolations();
+        } else {
+          _showError(result['message'] ?? 'Please follow the instruction');
+        }
       }
     } catch (e) {
-      _captureController.reverse();
-      _showError(e.toString().replaceAll('Exception: ', ''));
+      _instructionViolationCount++;
+
+      if (_instructionViolationCount >= _maxViolations) {
+        _faceDetectionTimer?.cancel();
+        _handleMaxViolations();
+      } else {
+        _showError(e.toString().replaceAll('Exception: ', ''));
+      }
     } finally {
       setState(() => _isCapturing = false);
     }
   }
+  void _handleMaxViolations() {
+    setState(() => _isAutoCaptureActive = false);
+    _showError('Please follow the instructions carefully');
 
-  Future<List<double>> _generateFaceEmbedding(List<int> imageBytes) async {
+    Future.delayed(const Duration(seconds: 2), () {
+      if (mounted) {
+        Navigator.pop(context);
+      }
+    });
+  }
+
+  Future<Map<String, dynamic>> _validateAndGenerateEmbedding(List<int> imageBytes) async {
     final image = img.decodeImage(Uint8List.fromList(imageBytes))!;
     final temp = File('${Directory.systemTemp.path}/face_${DateTime.now().millisecondsSinceEpoch}.jpg')
       ..writeAsBytesSync(imageBytes);
@@ -149,10 +295,32 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
     } catch (_) {}
 
     if (faces.isEmpty) {
-      throw Exception('No face detected. Please try again.');
+      return {
+        'success': false,
+        'message': 'No face detected. Please position your face in the circle.',
+      };
     }
 
     final face = faces.first;
+
+    // // Validate if face landmarks are within the circle boundary
+    if (!_areLandmarksInCircle(face, image.width.toDouble(), image.height.toDouble())) {
+      return {
+        'success': false,
+        'message': 'Face is outside the circle. Please position yourself correctly.',
+      };
+    }
+
+    //vlidating head pose
+    if (!_isCorrectHeadPose(face)) {
+      String instruction = _captureInstructions[_currentCaptureIndex];
+      return {
+        'success': false,
+        'message': 'Please follow the instruction: $instruction',
+      };
+    }
+
+    // Generate embedding
     final padding = (face.boundingBox.width * 0.25).toInt();
     final x = (face.boundingBox.left - padding).clamp(0, image.width - 1).toInt();
     final y = (face.boundingBox.top - padding).clamp(0, image.height - 1).toInt();
@@ -167,7 +335,107 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
     _interpreter.run(input, output);
 
     final rawEmbedding = List<double>.from(output.reshape([_embeddingSize]));
-    return _l2Normalize(rawEmbedding);
+    final normalizedEmbedding = _l2Normalize(rawEmbedding);
+
+    return {
+      'success': true,
+      'embedding': normalizedEmbedding,
+    };
+  }
+
+  bool _areLandmarksInCircle(Face face, double imageWidth, double imageHeight) {
+    // Calculate circle center and radius in pixel coordinates
+    final circleCenterX = imageWidth * _circleCenterX;
+    final circleCenterY = imageHeight * _circleCenterY;
+    final circleRadius = imageWidth * _circleRadiusPercent;
+
+    // Check if face bounding box center is within circle
+    final faceCenterX = face.boundingBox.left + face.boundingBox.width / 2;
+    final faceCenterY = face.boundingBox.top + face.boundingBox.height / 2;
+
+    final distance = math.sqrt(
+        math.pow(faceCenterX - circleCenterX, 2) +
+            math.pow(faceCenterY - circleCenterY, 2)
+    );
+
+    // For center pose (first capture), be more strict
+    if (_currentCaptureIndex == 0) {
+      // Check if face center is within circle with moderate tolerance
+      if (distance > circleRadius * 1.1) {
+        return false;
+      }
+
+      // For center pose, verify key landmarks are also within circle
+      final landmarks = face.landmarks;
+      if (landmarks.isNotEmpty) {
+        final List<FaceLandmark?> criticalLandmarks = [
+          landmarks[FaceLandmarkType.leftEye],
+          landmarks[FaceLandmarkType.rightEye],
+          landmarks[FaceLandmarkType.noseBase],
+        ];
+
+        int landmarksInCircle = 0;
+        for (var landmark in criticalLandmarks) {
+          if (landmark != null) {
+            final landmarkDist = math.sqrt(
+                math.pow(landmark.position.x - circleCenterX, 2) +
+                    math.pow(landmark.position.y - circleCenterY, 2)
+            );
+
+            if (landmarkDist <= circleRadius) {
+              landmarksInCircle++;
+            }
+          }
+        }
+
+        // At least 2 out of 3 landmarks should be in circle for center pose
+        if (landmarksInCircle < 2) {
+          return false;
+        }
+      }
+    } else {
+      // For angled poses (left/right), be more lenient
+      // Only check that majority of face bounding box is within circle
+      // This allows some landmarks to go outside when face is turned
+      if (distance > circleRadius * 1.8) {
+        return false;
+      }
+
+      // Check that at least the nose base (center of face) is in circle
+      final landmarks = face.landmarks;
+      if (landmarks.isNotEmpty) {
+        final noseBase = landmarks[FaceLandmarkType.noseBase];
+        if (noseBase != null) {
+          final noseDist = math.sqrt(
+              math.pow(noseBase.position.x - circleCenterX, 2) +
+                  math.pow(noseBase.position.y - circleCenterY, 2)
+          );
+
+          // Nose should be within circle (with good tolerance for angled poses)
+          if (noseDist > circleRadius * 1.2) {
+            return false;
+          }
+        }
+      }
+    }
+
+    return true;
+  }
+
+  bool _isCorrectHeadPose(Face face) {
+    // Get head rotation angles
+    final headEulerAngleY = face.headEulerAngleY ?? 0;  // Left/Right rotation
+
+    if (_currentCaptureIndex == 0) {
+      // Center pose: face should be looking straight (±20 degrees - more lenient)
+      return headEulerAngleY.abs() < 20;
+    } else if (_currentCaptureIndex == 1) {
+      // Left pose: face should be turned left (negative angle, -5 to -40 degrees - more lenient)
+      return headEulerAngleY < -5 && headEulerAngleY > -40;
+    } else {
+      // Right pose: face should be turned right (positive angle, 5 to 40 degrees - more lenient)
+      return headEulerAngleY > 5 && headEulerAngleY < 40;
+    }
   }
 
   List<double> _l2Normalize(List<double> embedding) {
@@ -195,22 +463,15 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
       _showError('Please enter your name');
       return;
     }
-    if (_emailController.text.trim().isEmpty) {
-      _showError('Please enter your email');
-      return;
-    }
-    if (!_emailController.text.contains('@')) {
-      _showError('Please enter a valid email');
-      return;
-    }
+
 
     setState(() => _isProcessing = true);
 
     try {
       final response = await _dio.post('/addUser', data: {
         'name': _nameController.text.trim(),
-        'email': _emailController.text.trim(),
-        'phone': _phoneController.text.trim(),
+        'email': "ds@gmail.com",
+        'phone': "5797532255",
         'faceEmbedding': _capturedEmbeddings,
       });
 
@@ -221,8 +482,9 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
       } else {
         _showError(response.data['message'] ?? 'Registration failed');
       }
-    } catch (e) {
-      _showError('Network error. Please try again.');
+    }on DioException catch (e) {
+      _showError('Error: ${e.response?.data["message"]}');
+      debugPrint("error registering user ${e.response?.data}");
     } finally {
       if (mounted) {
         setState(() => _isProcessing = false);
@@ -323,6 +585,7 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
         behavior: SnackBarBehavior.floating,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
         margin: const EdgeInsets.all(16),
+        duration: Duration(seconds: 2),
       ),
     );
   }
@@ -331,7 +594,10 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
     setState(() {
       _capturedEmbeddings.clear();
       _showForm = false;
+      _currentCaptureIndex = 0;
+      _instructionViolationCount = 0;
     });
+    _startAutoCaptureSequence();
   }
 
   @override
@@ -387,14 +653,14 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
                     ),
                   ),
                   const Spacer(),
-                  if (_capturedEmbeddings.isNotEmpty)
-                    IconButton(
-                      onPressed: _resetCapture,
-                      icon: const Icon(Icons.refresh, color: Colors.white),
-                      style: IconButton.styleFrom(
-                        backgroundColor: Colors.white.withOpacity(0.2),
-                      ),
-                    ),
+                  // if (_capturedEmbeddings.isNotEmpty && !_isAutoCaptureActive)
+                  //   IconButton(
+                  //     onPressed: _resetCapture,
+                  //     icon: const Icon(Icons.refresh, color: Colors.white),
+                  //     style: IconButton.styleFrom(
+                  //       backgroundColor: Colors.white.withOpacity(0.2),
+                  //     ),
+                  //   ),
                 ],
               ),
             ),
@@ -502,15 +768,40 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
 
         const Spacer(),
 
-        // Bottom section
+        // Bottom section with auto-capture instructions
         Container(
           padding: const EdgeInsets.all(24),
           child: Column(
             children: [
+              // Current instruction
+              if (_isAutoCaptureActive && _currentCaptureIndex < _requiredEmbeddings)
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF10b981).withOpacity(0.2),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                      color: const Color(0xFF10b981),
+                      width: 2,
+                    ),
+                  ),
+                  child: Text(
+                    _captureInstructions[_currentCaptureIndex],
+                    style: const TextStyle(
+                      color: Color(0xFF10b981),
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                ),
+
+              const SizedBox(height: 16),
+
               Text(
-                _capturedEmbeddings.isEmpty
-                    ? 'Position your face in the circle'
-                    : 'Capture ${_requiredEmbeddings - _capturedEmbeddings.length} more angle${_requiredEmbeddings - _capturedEmbeddings.length == 1 ? '' : 's'}',
+                _isCapturing
+                    ? 'Capturing...'
+                    : 'Position your face inside the circle',
                 style: const TextStyle(
                   color: Colors.white,
                   fontSize: 18,
@@ -520,7 +811,7 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
               ),
               const SizedBox(height: 8),
               Text(
-                'Try slightly different angles',
+                'Auto-capture in progress',
                 style: TextStyle(
                   color: Colors.white.withOpacity(0.7),
                   fontSize: 14,
@@ -528,39 +819,31 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
               ),
               const SizedBox(height: 32),
 
-              // Capture button
-              GestureDetector(
-                onTap: _capturedEmbeddings.length < _requiredEmbeddings && !_isCapturing
-                    ? _captureFaceEmbedding
-                    : null,
-                child: AnimatedContainer(
-                  duration: const Duration(milliseconds: 200),
-                  width: 80,
-                  height: 80,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: _isCapturing
-                        ? Colors.white.withOpacity(0.3)
-                        : Colors.white,
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.white.withOpacity(0.3),
-                        blurRadius: 20,
-                        spreadRadius: 5,
-                      ),
-                    ],
+              // Auto-capture indicator
+              AnimatedContainer(
+                duration: const Duration(milliseconds: 200),
+                width: 80,
+                height: 80,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: _isCapturing
+                      ? const Color(0xFF10b981).withOpacity(0.3)
+                      : Colors.white.withOpacity(0.3),
+                  border: Border.all(
+                    color: Colors.white,
+                    width: 3,
                   ),
+                ),
+                child: Center(
                   child: _isCapturing
-                      ? const Center(
-                    child: CircularProgressIndicator(
-                      strokeWidth: 3,
-                      valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
-                    ),
+                      ? const CircularProgressIndicator(
+                    strokeWidth: 3,
+                    valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
                   )
-                      : const Icon(
+                      : Icon(
                     Icons.camera_alt,
                     size: 36,
-                    color: Color(0xFF0f172a),
+                    color: Colors.white.withOpacity(0.8),
                   ),
                 ),
               ),
@@ -628,7 +911,7 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
                 ),
               ),
 
-              const SizedBox(height: 48),
+              const SizedBox(height: 25),
 
               // Form fields
               _buildTextField(
@@ -636,22 +919,8 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
                 label: 'Full Name',
                 icon: Icons.person_outline,
               ),
-              const SizedBox(height: 20),
-              _buildTextField(
-                controller: _emailController,
-                label: 'Email Address',
-                icon: Icons.email_outlined,
-                keyboardType: TextInputType.emailAddress,
-              ),
-              const SizedBox(height: 20),
-              _buildTextField(
-                controller: _phoneController,
-                label: 'Phone Number (Optional)',
-                icon: Icons.phone_outlined,
-                keyboardType: TextInputType.phone,
-              ),
 
-              const SizedBox(height: 40),
+              const SizedBox(height: 20),
 
               // Submit button
               SizedBox(
@@ -660,8 +929,8 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
                 child: ElevatedButton(
                   onPressed: !_isProcessing ? _registerUser : null,
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF10b981),
-                    disabledBackgroundColor: const Color(0xFF10b981).withOpacity(0.5),
+                    backgroundColor: Colors.blue,
+                    disabledBackgroundColor: Colors.blue.withOpacity(0.5),
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(16),
                     ),
@@ -713,11 +982,12 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
         keyboardType: keyboardType,
         style: const TextStyle(
           color: Colors.white,
-          fontSize: 16,
+          fontSize: 15,
         ),
         decoration: InputDecoration(
           labelText: label,
           labelStyle: TextStyle(
+            fontSize: 14,
             color: Colors.white.withOpacity(0.6),
           ),
           prefixIcon: Icon(
@@ -725,7 +995,7 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
             color: Colors.white.withOpacity(0.6),
           ),
           border: InputBorder.none,
-          contentPadding: const EdgeInsets.all(20),
+          contentPadding: const EdgeInsets.all(8),
         ),
       ),
     );

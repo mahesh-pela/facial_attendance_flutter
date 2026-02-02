@@ -1,7 +1,6 @@
 import 'package:face_attendance/dashboard/addUser.dart';
+import 'package:face_attendance/dashboard/markAttendance.dart';
 import 'package:flutter/material.dart';
-
-import 'markAttendance.dart';
 
 class MainScreen extends StatefulWidget {
   const MainScreen({super.key});
@@ -17,137 +16,280 @@ class _MainScreenState extends State<MainScreen> {
       body: Container(
         decoration: BoxDecoration(
           gradient: LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
             colors: [
-              Theme.of(context).primaryColor.withOpacity(0.8),
-              Theme.of(context).primaryColor,
+              Colors.blue.shade900,
+              Colors.blue.shade800,
+              Colors.blue.shade700,
             ],
+            stops: [0.0, 0.5, 1.0],
           ),
         ),
         child: SafeArea(
-          child: Padding(
-            padding: EdgeInsets.all(20),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                SizedBox(height: 40),
-
-                // Header
-                Text(
-                  "Face Recognition",
-                  style: TextStyle(
-                    fontSize: 32,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.white,
-                  ),
-                  textAlign: TextAlign.center,
-                ),
-                SizedBox(height: 8),
-                Text(
-                  "Attendance System",
-                  style: TextStyle(
-                    fontSize: 18,
-                    color: Colors.white70,
-                    letterSpacing: 1.2,
-                  ),
-                  textAlign: TextAlign.center,
-                ),
-
-                SizedBox(height: 60),
-
-                // Logo or Icon
-                Container(
-                  padding: EdgeInsets.all(40),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    shape: BoxShape.circle,
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.black26,
-                        blurRadius: 20,
-                        offset: Offset(0, 10),
-                      ),
-                    ],
-                  ),
-                  child: Icon(
-                    Icons.face_retouching_natural,
-                    size: 100,
-                    color: Theme.of(context).primaryColor,
-                  ),
-                ),
-
-                Spacer(),
-
-                // Mark Attendance Button
-                _buildActionCard(
-                  context: context,
-                  title: "Mark Attendance",
-                  subtitle: "Verify your identity",
-                  icon: Icons.fingerprint,
-                  color: Colors.green,
-                  onTap: () {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (context) => MarkAttendance(),
-                      ),
-                    );
-                  },
-                ),
-
-                SizedBox(height: 20),
-
-                // Register User Button
-                _buildActionCard(
-                  context: context,
-                  title: "Register New User",
-                  subtitle: "Add a new person",
-                  icon: Icons.person_add,
-                  color: Colors.blue,
-                  onTap: () {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (context) => RegisterUser(),
-                      ),
-                    );
-                  },
-                ),
-
-                SizedBox(height: 40),
-
-                // Info text
-                Container(
-                  padding: EdgeInsets.all(16),
-                  decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.1),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Row(
-                    children: [
-                      Icon(
-                        Icons.info_outline,
-                        color: Colors.white70,
-                        size: 20,
-                      ),
-                      SizedBox(width: 12),
-                      Expanded(
-                        child: Text(
-                          "Secure facial recognition with liveness detection",
+          child: Column(
+            children: [
+              // App Bar
+              Padding(
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 16.0, vertical: 16.0),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          "Face Recognition",
                           style: TextStyle(
-                            color: Colors.white70,
-                            fontSize: 12,
+                            fontSize: 24,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white,
                           ),
                         ),
+                        SizedBox(height: 4),
+                        Text(
+                          "Secure Attendance System",
+                          style: TextStyle(
+                            fontSize: 14,
+                            color: Colors.white70,
+                          ),
+                        ),
+                      ],
+                    ),
+                    Container(
+                      width: 48,
+                      height: 48,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        border: Border.all(color: Colors.white30, width: 1.5),
                       ),
-                    ],
+                      child: Icon(
+                        Icons.person_outline,
+                        color: Colors.white,
+                        size: 24,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+
+              SizedBox(height: 25),
+
+              // Hero Section
+              Expanded(
+                child: SingleChildScrollView(
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16.0),
+                    child: Column(
+                      children: [
+                        // Welcome Card
+                        Container(
+                          width: double.infinity,
+                          padding: EdgeInsets.all(24),
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(20),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.black.withOpacity(0.1),
+                                blurRadius: 20,
+                                offset: Offset(0, 10),
+                              ),
+                            ],
+                          ),
+                          child: Column(
+                            children: [
+                              Container(
+                                width: 80,
+                                height: 80,
+                                decoration: BoxDecoration(
+                                  shape: BoxShape.circle,
+                                  gradient: LinearGradient(
+                                    colors: [
+                                      Colors.blue.shade600,
+                                      Colors.blue.shade800,
+                                    ],
+                                  ),
+                                ),
+                                child: Icon(
+                                  Icons.face_retouching_natural,
+                                  color: Colors.white,
+                                  size: 40,
+                                ),
+                              ),
+                              SizedBox(height: 20),
+                              Text(
+                                "Welcome to Face Attendance",
+                                style: TextStyle(
+                                  fontSize: 20,
+                                  fontWeight: FontWeight.w600,
+                                  color: Colors.grey.shade800,
+                                ),
+                              ),
+                              SizedBox(height: 12),
+                              Text(
+                                "Use facial recognition for secure and efficient attendance marking",
+                                textAlign: TextAlign.center,
+                                style: TextStyle(
+                                  fontSize: 14,
+                                  color: Colors.grey.shade600,
+                                  height: 1.5,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+
+                        SizedBox(height: 20),
+
+                        // Actions Grid
+                        Column(
+                          children: [
+                            // Row 1
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: _buildActionCard(
+                                    title: "Mark Attendance",
+                                    subtitle: "Verify identity and log attendance",
+                                    icon: Icons.fingerprint,
+                                    color: Colors.green,
+                                    iconBackground: Colors.green.shade50,
+                                    onTap: () {
+                                      Navigator.push(
+                                        context,
+                                        MaterialPageRoute(
+                                          builder: (context) => MarkAttendance(),
+                                        ),
+                                      );
+                                    },
+                                  ),
+                                ),
+                                SizedBox(width: 16),
+                                Expanded(
+                                  child: _buildActionCard(
+                                    title: "Register User",
+                                    subtitle: "Add new person to system",
+                                    icon: Icons.person_add,
+                                    color: Colors.blue,
+                                    iconBackground: Colors.blue.shade50,
+                                    onTap: () {
+                                      Navigator.push(
+                                        context,
+                                        MaterialPageRoute(
+                                          builder: (context) => RegisterUser(),
+                                        ),
+                                      );
+                                    },
+                                  ),
+                                ),
+                              ],
+                            ),
+
+                            SizedBox(height: 16),
+
+                            // Row 2 (Additional options if needed)
+                            // Row(
+                            //   children: [
+                            //     Expanded(
+                            //       child: _buildActionCard(
+                            //         title: "Attendance Report",
+                            //         subtitle: "View attendance history",
+                            //         icon: Icons.bar_chart,
+                            //         color: Colors.orange,
+                            //         iconBackground: Colors.orange.shade50,
+                            //         onTap: () {
+                            //           // Add report screen navigation
+                            //         },
+                            //       ),
+                            //     ),
+                            //     SizedBox(width: 16),
+                            //     Expanded(
+                            //       child: _buildActionCard(
+                            //         title: "Settings",
+                            //         subtitle: "Configure system settings",
+                            //         icon: Icons.settings,
+                            //         color: Colors.purple,
+                            //         iconBackground: Colors.purple.shade50,
+                            //         onTap: () {
+                            //           // Add settings screen navigation
+                            //         },
+                            //       ),
+                            //     ),
+                            //   ],
+                            // ),
+                          ],
+                        ),
+
+                        SizedBox(height: 40),
+
+                        // // Stats or Info Section
+                        // Container(
+                        //   padding: EdgeInsets.all(20),
+                        //   decoration: BoxDecoration(
+                        //     color: Colors.white.withOpacity(0.1),
+                        //     borderRadius: BorderRadius.circular(16),
+                        //     border: Border.all(color: Colors.white30),
+                        //   ),
+                        //   child: Row(
+                        //     children: [
+                        //       Container(
+                        //         padding: EdgeInsets.all(12),
+                        //         decoration: BoxDecoration(
+                        //           shape: BoxShape.circle,
+                        //           color: Colors.white.withOpacity(0.2),
+                        //         ),
+                        //         child: Icon(
+                        //           Icons.security,
+                        //           color: Colors.white,
+                        //           size: 24,
+                        //         ),
+                        //       ),
+                        //       SizedBox(width: 16),
+                        //       Expanded(
+                        //         child: Column(
+                        //           crossAxisAlignment: CrossAxisAlignment.start,
+                        //           children: [
+                        //             Text(
+                        //               "Security Features",
+                        //               style: TextStyle(
+                        //                 color: Colors.white,
+                        //                 fontWeight: FontWeight.w600,
+                        //                 fontSize: 14,
+                        //               ),
+                        //             ),
+                        //             SizedBox(height: 4),
+                        //             Text(
+                        //               "Live face detection • Anti-spoofing • Encrypted data",
+                        //               style: TextStyle(
+                        //                 color: Colors.white70,
+                        //                 fontSize: 12,
+                        //               ),
+                        //             ),
+                        //           ],
+                        //         ),
+                        //       ),
+                        //     ],
+                        //   ),
+                        // ),
+                        //
+                        // SizedBox(height: 60),
+
+                        // Version Info
+                        // Text(
+                        //   "Version 2.1.0 • Secure System",
+                        //   style: TextStyle(
+                        //     color: Colors.white54,
+                        //     fontSize: 12,
+                        //   ),
+                        // ),
+                      ],
+                    ),
                   ),
                 ),
-
-                SizedBox(height: 20),
-              ],
-            ),
+              ),
+            ],
           ),
         ),
       ),
@@ -155,67 +297,75 @@ class _MainScreenState extends State<MainScreen> {
   }
 
   Widget _buildActionCard({
-    required BuildContext context,
     required String title,
     required String subtitle,
     required IconData icon,
     required Color color,
+    required Color iconBackground,
     required VoidCallback onTap,
   }) {
     return Material(
       color: Colors.white,
-      borderRadius: BorderRadius.circular(20),
-      elevation: 8,
+      borderRadius: BorderRadius.circular(16),
+      elevation: 4,
       child: InkWell(
         onTap: onTap,
-        borderRadius: BorderRadius.circular(20),
+        borderRadius: BorderRadius.circular(16),
         child: Container(
-          padding: EdgeInsets.all(24),
+          padding: EdgeInsets.all(20),
           decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(20),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: Colors.grey.shade100),
           ),
-          child: Row(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Container(
-                padding: EdgeInsets.all(16),
+                width: 56,
+                height: 56,
                 decoration: BoxDecoration(
-                  color: color.withOpacity(0.1),
-                  borderRadius: BorderRadius.circular(16),
+                  color: iconBackground,
+                  borderRadius: BorderRadius.circular(12),
                 ),
                 child: Icon(
                   icon,
-                  size: 40,
                   color: color,
+                  size: 28,
                 ),
               ),
-              SizedBox(width: 20),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      title,
-                      style: TextStyle(
-                        fontSize: 20,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.black87,
-                      ),
-                    ),
-                    SizedBox(height: 4),
-                    Text(
-                      subtitle,
-                      style: TextStyle(
-                        fontSize: 14,
-                        color: Colors.grey[600],
-                      ),
-                    ),
-                  ],
+              SizedBox(height: 16),
+              Text(
+                title,
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600,
+                  color: Colors.grey.shade800,
                 ),
               ),
-              Icon(
-                Icons.arrow_forward_ios,
-                color: Colors.grey[400],
-                size: 20,
+              SizedBox(height: 4),
+              Text(
+                subtitle,
+                style: TextStyle(
+                  fontSize: 12,
+                  color: Colors.grey.shade600,
+                ),
+              ),
+              SizedBox(height: 8),
+              Align(
+                alignment: Alignment.centerRight,
+                child: Container(
+                  width: 32,
+                  height: 32,
+                  decoration: BoxDecoration(
+                    color: color.withOpacity(0.1),
+                    shape: BoxShape.circle,
+                  ),
+                  child: Icon(
+                    Icons.arrow_forward,
+                    color: color,
+                    size: 16,
+                  ),
+                ),
               ),
             ],
           ),
