@@ -22,6 +22,7 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
   late List<CameraDescription> _cameras;
   late AnimationController _pulseController;
   late AnimationController _captureController;
+  late AnimationController _arrowAnimationController; // NEW: For arrow movement
   Timer? _faceDetectionTimer;
   bool _faceDetectedInPosition = false;
   bool _isDetectionInProgress = false;
@@ -30,6 +31,11 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
   bool _isProcessing = false;
   bool _isCapturing = false;
   bool _showForm = false;
+
+  bool _showLeftArrow = false;
+  bool _showRightArrow = false;
+  bool _showUpArrow = false;
+  bool _showDownArrow = false;
 
   final TextEditingController _nameController = TextEditingController();
   final TextEditingController _emailController = TextEditingController();
@@ -79,7 +85,7 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
   // Quality thresholds
   static const double _minFaceSize = 0.15;
   static const double _maxFaceSize = 0.6;
-  static const double _minFaceHeightRatio = 0.2; // Minimum 20% of screen height
+  static const double _minFaceHeightRatio = 0.2;
   static const double _minEyeOpenProbability = 0.5;
 
   // Real-time feedback
@@ -102,6 +108,12 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
       duration: const Duration(milliseconds: 300),
       vsync: this,
     );
+
+    // NEW: Arrow animation controller
+    _arrowAnimationController = AnimationController(
+      duration: const Duration(milliseconds: 1500),
+      vsync: this,
+    )..repeat();
   }
 
   @override
@@ -115,6 +127,7 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
     _phoneController.dispose();
     _pulseController.dispose();
     _captureController.dispose();
+    _arrowAnimationController.dispose(); // NEW
     super.dispose();
   }
 
@@ -148,10 +161,71 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
       _instructionViolationCount = 0;
       _faceDetectedInPosition = false;
       _frameCounter = 0;
+      _showLeftArrow = false;
+      _showRightArrow = false;
+      _showUpArrow = false;
+      _showDownArrow = false;
     });
 
     _startContinuousFaceDetection();
   }
+
+  //method for arrow indicators
+  void _updateArrowIndicators(Face face, double imageWidth, double imageHeight) {
+    final circleCenterX = imageWidth * _circleCenterX;
+    final circleCenterY = imageHeight * _circleCenterY;
+    final circleRadius = imageWidth * _circleRadiusPercent;
+
+    final faceRect = face.boundingBox;
+    final faceCenterX = faceRect.left + faceRect.width / 2;
+    final faceCenterY = faceRect.top + faceRect.height / 2;
+
+    if (!mounted) return;
+
+    setState(() {
+      // For center pose (index 0), show arrows to center the face
+      if (_currentCaptureIndex == 0) {
+        // Horizontal positioning
+        if (faceCenterX < circleCenterX - circleRadius * 0.1) {
+          _showRightArrow = true;
+          _showLeftArrow = false;
+        } else if (faceCenterX > circleCenterX + circleRadius * 0.1) {
+          _showRightArrow = false;
+          _showLeftArrow = true;
+        } else {
+          _showRightArrow = false;
+          _showLeftArrow = false;
+        }
+
+        // Vertical positioning
+        if (faceCenterY < circleCenterY - circleRadius * 0.1) {
+          _showDownArrow = true;
+          _showUpArrow = false;
+        } else if (faceCenterY > circleCenterY + circleRadius * 0.1) {
+          _showDownArrow = false;
+          _showUpArrow = true;
+        } else {
+          _showDownArrow = false;
+          _showUpArrow = false;
+        }
+      }
+      // For right turn (index 1), show left arrow to guide turn
+      else if (_currentCaptureIndex == 1) {
+        _showLeftArrow = true;
+        _showRightArrow = false;
+        _showUpArrow = false;
+        _showDownArrow = false;
+      }
+      // For left turn (index 2), show right arrow to guide turn
+      else if (_currentCaptureIndex == 2) {
+        _showRightArrow = true;
+        _showLeftArrow = false;
+        _showUpArrow = false;
+        _showDownArrow = false;
+      }
+    });
+  }
+
 
   void _startContinuousFaceDetection() {
     _faceDetectionTimer?.cancel();
@@ -222,9 +296,21 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
 
       try { await temp.delete(); } catch (_) {}
 
-      if (faces.isEmpty) return {'isValid': false, 'message': 'No face detected', 'isWarning': false};
+      if (faces.isEmpty) {
+        // Hide arrows when no face detected
+        if (mounted) {
+          setState(() {
+            _showLeftArrow = false;
+            _showRightArrow = false;
+            _showUpArrow = false;
+            _showDownArrow = false;
+          });
+        }
+        return {'isValid': false, 'message': 'No face detected', 'isWarning': false};
+      }
 
       final face = faces.first;
+      _updateArrowIndicators(face, image.width.toDouble(), image.height.toDouble());
 
       // FACE SIZE CHECK
       final faceWidthRatio = face.boundingBox.width / image.width;
@@ -268,6 +354,17 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
             return {'isValid': false, 'message': 'Position face fully inside the circle', 'isWarning': true};
           }
         }
+      }
+
+      // NEW: Check if entire face bounding box is within circle
+      if (!_isFullFaceInsideCircle(face, image.width.toDouble(), image.height.toDouble())) {
+        return {'isValid': false, 'message': 'Center your face better in the circle', 'isWarning': true};
+      }
+
+      // NEW: Verify face proportions are correct (not stretched/cropped)
+      final faceAspectRatio = face.boundingBox.width / face.boundingBox.height;
+      if (faceAspectRatio < 0.7 || faceAspectRatio > 1.3) {
+        return {'isValid': false, 'message': 'Face appears distorted. Look straight', 'isWarning': true};
       }
 
       // HEAD POSE
@@ -443,10 +540,42 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
       };
     }
 
+    // NEW: Check if entire face bounding box is within circle
+    if (!_isFullFaceInsideCircle(face, image.width.toDouble(), image.height.toDouble())) {
+      return {
+        'success': false,
+        'message': 'Position entire face inside the circle',
+      };
+    }
+
+    // NEW: Verify face proportions are correct (not stretched/cropped)
+    final faceAspectRatio = face.boundingBox.width / face.boundingBox.height;
+    if (faceAspectRatio < 0.7 || faceAspectRatio > 1.3) {
+      return {
+        'success': false,
+        'message': 'Face appears distorted. Look straight',
+      };
+    }
+
+    // NEW: Check that face covers reasonable area of circle
+    final circleCenterX = image.width * _circleCenterX;
+    final circleCenterY = image.height * _circleCenterY;
+    final circleRadius = image.width * _circleRadiusPercent;
+    final faceArea = face.boundingBox.width * face.boundingBox.height;
+    final circleArea = math.pi * circleRadius * circleRadius;
+    final coverageRatio = faceArea / circleArea;
+
+    if (coverageRatio < 0.15) {
+      return {
+        'success': false,
+        'message': 'Face too small. Move closer to fill the circle.',
+      };
+    }
+
     // NEW: Validate all landmarks for center pose
     if (_currentCaptureIndex == 0) {
       final landmarks = face.landmarks;
-      final requiredLandmarks = [
+      final List<FaceLandmarkType> requiredLandmarks = [
         FaceLandmarkType.leftEye,
         FaceLandmarkType.rightEye,
         FaceLandmarkType.noseBase,
@@ -457,17 +586,27 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
         FaceLandmarkType.rightCheek,
       ];
 
-      int detectedCount = 0;
+      int validLandmarks = 0;
       for (var landmarkType in requiredLandmarks) {
-        if (landmarks[landmarkType] != null) {
-          detectedCount++;
+        final landmark = landmarks[landmarkType];
+        if (landmark != null) {
+          final landmarkDist = math.sqrt(
+              math.pow(landmark.position.x - circleCenterX, 2) +
+                  math.pow(landmark.position.y - circleCenterY, 2)
+          );
+
+          // Landmark must be well within circle (80% of radius)
+          if (landmarkDist <= circleRadius * 0.8) {
+            validLandmarks++;
+          }
         }
       }
 
-      if (detectedCount < 8) {
+      // REQUIRE ALL 8 landmarks to be present and properly positioned
+      if (validLandmarks < 8) {
         return {
           'success': false,
-          'message': 'Full face not detected. Show eyes, nose, and mouth.',
+          'message': 'Full face not detected. Show complete face inside circle.',
         };
       }
     }
@@ -573,89 +712,129 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
     final circleCenterY = imageHeight * _circleCenterY;
     final circleRadius = imageWidth * _circleRadiusPercent;
 
-    final faceCenterX = face.boundingBox.left + face.boundingBox.width / 2;
-    final faceCenterY = face.boundingBox.top + face.boundingBox.height / 2;
-
-    final distance = math.sqrt(
-        math.pow(faceCenterX - circleCenterX, 2) +
-            math.pow(faceCenterY - circleCenterY, 2)
-    );
-
+    // For center pose (index 0), be strict
     if (_currentCaptureIndex == 0) {
-      // Center pose - STRICT validation
-      if (distance > circleRadius * 0.95) { // Changed from 1.1 to 1.0
+      // FIRST: Check if face is reasonably inside circle
+      if (!_isFullFaceInsideCircle(face, imageWidth, imageHeight)) {
         return false;
       }
 
+      // SECOND: Check critical landmarks for center pose
       final landmarks = face.landmarks;
-      if (landmarks.isEmpty) {
-        return false; // Reject if no landmarks detected
-      }
-
-      // ALL critical landmarks must be present AND in circle
       final List<FaceLandmarkType> requiredLandmarks = [
         FaceLandmarkType.leftEye,
         FaceLandmarkType.rightEye,
         FaceLandmarkType.noseBase,
         FaceLandmarkType.leftMouth,
         FaceLandmarkType.rightMouth,
-        FaceLandmarkType.bottomMouth,
-        FaceLandmarkType.leftCheek,
-        FaceLandmarkType.rightCheek
       ];
 
-      int landmarksInCircle = 0;
-      int landmarksDetected = 0;
-
+      int landmarksInside = 0;
       for (var landmarkType in requiredLandmarks) {
         final landmark = landmarks[landmarkType];
         if (landmark != null) {
-          landmarksDetected++;
-          final landmarkDist = math.sqrt(
-              math.pow(landmark.position.x - circleCenterX, 2) +
-                  math.pow(landmark.position.y - circleCenterY, 2)
-          );
+          final dx = landmark.position.x - circleCenterX;
+          final dy = landmark.position.y - circleCenterY;
+          final distance = math.sqrt(dx * dx + dy * dy);
 
-          if (landmarkDist <= circleRadius * 0.95) { // Stricter - 95% of radius
-            landmarksInCircle++;
+          if (distance <= circleRadius * 0.9) {
+            landmarksInside++;
           }
         }
       }
 
-      // CRITICAL: All 8 landmarks must be detected AND in circle
-      if (landmarksDetected < 8 || landmarksInCircle < 8) {
-        return false;
-      }
-
-      // Additional check: Face height must be reasonable (ensure full face)
-      final faceHeight = face.boundingBox.height;
-      final faceHeightRatio = faceHeight / imageHeight;
-      if (faceHeightRatio < 0.2) {
-        return false;
-      }
-    } else {
-      // Angled poses - more lenient but still validate
-      if (distance > circleRadius * 1.8) {
-        return false;
-      }
-
+      // At least 4 out of 5 critical landmarks must be inside for center pose
+      return landmarksInside >= 4;
+    }
+    // For angled poses (index 1 and 2), be more lenient
+    else {
+      // Check only nose and at least one eye are in circle
       final landmarks = face.landmarks;
-      if (landmarks.isNotEmpty) {
-        final noseBase = landmarks[FaceLandmarkType.noseBase];
-        if (noseBase != null) {
-          final noseDist = math.sqrt(
-              math.pow(noseBase.position.x - circleCenterX, 2) +
-                  math.pow(noseBase.position.y - circleCenterY, 2)
-          );
 
-          if (noseDist > circleRadius * 1.2) {
-            return false;
-          }
+      // Check nose base
+      final nose = landmarks[FaceLandmarkType.noseBase];
+      if (nose != null) {
+        final dx = nose.position.x - circleCenterX;
+        final dy = nose.position.y - circleCenterY;
+        final noseDistance = math.sqrt(dx * dx + dy * dy);
+
+        // Nose should be well inside circle for angled poses
+        if (noseDistance > circleRadius * 0.8) {
+          return false;
         }
+      } else {
+        return false;
+      }
+
+      // Check at least one eye is visible and inside circle
+      final leftEye = landmarks[FaceLandmarkType.leftEye];
+      final rightEye = landmarks[FaceLandmarkType.rightEye];
+
+      bool leftEyeInside = false;
+      bool rightEyeInside = false;
+
+      if (leftEye != null) {
+        final dx = leftEye.position.x - circleCenterX;
+        final dy = leftEye.position.y - circleCenterY;
+        final distance = math.sqrt(dx * dx + dy * dy);
+        leftEyeInside = distance <= circleRadius * 1.2;
+      }
+
+      if (rightEye != null) {
+        final dx = rightEye.position.x - circleCenterX;
+        final dy = rightEye.position.y - circleCenterY;
+        final distance = math.sqrt(dx * dx + dy * dy);
+        rightEyeInside = distance <= circleRadius * 1.2;
+      }
+
+      // For angled poses, at least one eye should be visible
+      return leftEyeInside || rightEyeInside;
+    }
+  }
+
+  bool _isFullFaceInsideCircle(Face face, double imageWidth, double imageHeight) {
+    final circleCenterX = imageWidth * _circleCenterX;
+    final circleCenterY = imageHeight * _circleCenterY;
+    final circleRadius = imageWidth * _circleRadiusPercent;
+
+    final faceRect = face.boundingBox;
+
+    // Calculate face center
+    final faceCenterX = faceRect.left + faceRect.width / 2;
+    final faceCenterY = faceRect.top + faceRect.height / 2;
+
+    // Calculate distance from face center to circle center
+    final centerDistance = math.sqrt(
+        math.pow(faceCenterX - circleCenterX, 2) +
+            math.pow(faceCenterY - circleCenterY, 2)
+    );
+
+    // Face center should be within 40% of circle radius from center
+    if (centerDistance > circleRadius * 0.4) {
+      return false;
+    }
+
+    // Check if majority of face area is inside circle
+    final List<Offset> faceEdgeCenters = [
+      Offset(faceRect.left + faceRect.width / 2, faceRect.top),
+      Offset(faceRect.left + faceRect.width / 2, faceRect.bottom),
+      Offset(faceRect.left, faceRect.top + faceRect.height / 2),
+      Offset(faceRect.right, faceRect.top + faceRect.height / 2),
+    ];
+
+    int edgesInside = 0;
+    for (var edge in faceEdgeCenters) {
+      final dx = edge.dx - circleCenterX;
+      final dy = edge.dy - circleCenterY;
+      final distance = math.sqrt(dx * dx + dy * dy);
+
+      if (distance <= circleRadius * 1.1) {
+        edgesInside++;
       }
     }
 
-    return true;
+    // At least 3 out of 4 edge centers should be inside circle
+    return edgesInside >= 3;
   }
 
   bool _isCorrectHeadPose(Face face) {
@@ -663,16 +842,16 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
     final headEulerAngleX = face.headEulerAngleX ?? 0;
     final headEulerAngleZ = face.headEulerAngleZ ?? 0;
 
-    if (headEulerAngleX.abs() > 25 || headEulerAngleZ.abs() > 20) {
+    if (headEulerAngleX.abs() > 30 || headEulerAngleZ.abs() > 25) {
       return false;
     }
 
     if (_currentCaptureIndex == 0) {
-      return headEulerAngleY.abs() < 18;
+      return headEulerAngleY.abs() < 20;
     } else if (_currentCaptureIndex == 1) {
-      return headEulerAngleY < -8 && headEulerAngleY > -38;
+      return headEulerAngleY < -5 && headEulerAngleY > -45;
     } else {
-      return headEulerAngleY > 8 && headEulerAngleY < 38;
+      return headEulerAngleY > 5 && headEulerAngleY < 45;
     }
   }
 
@@ -732,21 +911,9 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
               : _phoneController.text.trim(),
           'faceEmbedding': _capturedEmbeddings,
         },
-        options: Options(
-          extra: {
-            'maxRetries': 3,
-            'retryInterval': const Duration(seconds: 2),
-          },
-        ),
       );
 
-      if (response.data['success'] == true) {
-        if (mounted) {
-          _showSuccessDialog();
-        }
-      } else {
-        _showError(response.data['message'] ?? 'Registration failed');
-      }
+      _showSuccessDialog();
     } on DioException catch (e) {
       String errorMessage = 'Registration failed. Please try again.';
 
@@ -754,12 +921,10 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
         errorMessage = e.response!.data['message'];
       } else if (e.type == DioExceptionType.connectionTimeout) {
         errorMessage = 'Connection timeout. Please check your internet.';
-      } else if (e.type == DioExceptionType.receiveTimeout) {
-        errorMessage = 'Server response timeout. Please try again.';
       }
 
       _showError(errorMessage);
-      debugPrint("Error registering user: ${e.response?.data}");
+      debugPrint("Error registering user: ${e}");
     } catch (e) {
       _showError('Unexpected error: ${e.toString()}');
       debugPrint("Unexpected error: $e");
@@ -876,6 +1041,10 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
       _instructionViolationCount = 0;
       _frameCounter = 0;
       _showFeedback = false;
+      _showLeftArrow = false;
+      _showRightArrow = false;
+      _showUpArrow = false;
+      _showDownArrow = false;
     });
     _startAutoCaptureSequence();
   }
@@ -997,90 +1166,108 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
   Widget _buildCameraUI() {
     return Column(
       children: [
-        const Spacer(),
+        const SizedBox(height: 40),
 
-        Center(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
+        // Main content area with arrows
+        Expanded(
+          child: Stack(
             children: [
-              AnimatedBuilder(
-                animation: _pulseController,
-                builder: (context, child) {
-                  return Stack(
-                    alignment: Alignment.center,
-                    children: [
-                      Container(
-                        width: 280 + (_pulseController.value * 20),
-                        height: 350 + (_pulseController.value * 20),
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          border: Border.all(
-                            color: Colors.white.withOpacity(0.3 - (_pulseController.value * 0.2)),
-                            width: 2,
+              Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    AnimatedBuilder(
+                      animation: _pulseController,
+                      builder: (context, child) {
+                        return Stack(
+                          alignment: Alignment.center,
+                          children: [
+                            Container(
+                              width: 280 + (_pulseController.value * 20),
+                              height: 350 + (_pulseController.value * 20),
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                border: Border.all(
+                                  color: Colors.red.withOpacity(0.3 - (_pulseController.value * 0.2)),
+                                  width: 2,
+                                ),
+                              ),
+                            ),
+                            AnimatedBuilder(
+                              animation: _captureController,
+                              builder: (context, child) {
+                                return Container(
+                                  width: 260,
+                                  height: 330,
+                                  decoration: BoxDecoration(
+                                    shape: BoxShape.circle,
+                                    border: Border.all(
+                                      color: _capturedEmbeddings.isEmpty
+                                          ? Colors.red
+                                          : const Color(0xFF10b981),
+                                      width: 4,
+                                    ),
+                                    boxShadow: [
+                                      BoxShadow(
+                                        color: (_capturedEmbeddings.isEmpty
+                                            ? Colors.red
+                                            : const Color(0xFF10b981))
+                                            .withOpacity(0.5),
+                                        blurRadius: 20 + (_captureController.value * 20),
+                                        spreadRadius: 5 + (_captureController.value * 10),
+                                      ),
+                                    ],
+                                  ),
+                                  child: Container(
+                                    decoration: BoxDecoration(
+                                      shape: BoxShape.circle,
+                                      border: Border.all(
+                                        color: Colors.white.withOpacity(0.2),
+                                        width: 2,
+                                      ),
+                                    ),
+                                  ),
+                                );
+                              },
+                            ),
+                          ],
+                        );
+                      },
+                    ),
+
+                    const SizedBox(height: 40),
+
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: List.generate(
+                        _requiredEmbeddings,
+                            (index) => AnimatedContainer(
+                          duration: const Duration(milliseconds: 300),
+                          margin: const EdgeInsets.symmetric(horizontal: 6),
+                          width: index < _capturedEmbeddings.length ? 40 : 12,
+                          height: 12,
+                          decoration: BoxDecoration(
+                            color: index < _capturedEmbeddings.length
+                                ? const Color(0xFF10b981)
+                                : Colors.white.withOpacity(0.3),
+                            borderRadius: BorderRadius.circular(6),
                           ),
                         ),
                       ),
-                      AnimatedBuilder(
-                        animation: _captureController,
-                        builder: (context, child) {
-                          return Container(
-                            width: 260,
-                            height: 330,
-                            decoration: BoxDecoration(
-                              shape: BoxShape.circle,
-                              border: Border.all(
-                                color: _capturedEmbeddings.isEmpty
-                                    ? Colors.white
-                                    : const Color(0xFF10b981),
-                                width: 3,
-                              ),
-                              boxShadow: [
-                                BoxShadow(
-                                  color: (_capturedEmbeddings.isEmpty
-                                      ? Colors.white
-                                      : const Color(0xFF10b981))
-                                      .withOpacity(0.5),
-                                  blurRadius: 20 + (_captureController.value * 20),
-                                  spreadRadius: 5 + (_captureController.value * 10),
-                                ),
-                              ],
-                            ),
-                          );
-                        },
-                      ),
-                    ],
-                  );
-                },
-              ),
-
-              const SizedBox(height: 40),
-
-              Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: List.generate(
-                  _requiredEmbeddings,
-                      (index) => AnimatedContainer(
-                    duration: const Duration(milliseconds: 300),
-                    margin: const EdgeInsets.symmetric(horizontal: 6),
-                    width: index < _capturedEmbeddings.length ? 40 : 12,
-                    height: 12,
-                    decoration: BoxDecoration(
-                      color: index < _capturedEmbeddings.length
-                          ? const Color(0xFF10b981)
-                          : Colors.white.withOpacity(0.3),
-                      borderRadius: BorderRadius.circular(6),
                     ),
-                  ),
+                  ],
                 ),
               ),
+
+              // NEW: Custom animated arrow indicators
+              _buildArrowIndicators(),
             ],
           ),
         ),
 
-        const Spacer(),
-
+        // Bottom controls section
         Container(
-          padding: const EdgeInsets.all(24),
+          padding: const EdgeInsets.all(16),
           child: Column(
             children: [
               if (_isAutoCaptureActive && _currentCaptureIndex < _requiredEmbeddings)
@@ -1110,7 +1297,7 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
               Text(
                 _isCapturing
                     ? 'Capturing...'
-                    : 'Position your face inside the circle',
+                    : 'Position your ENTIRE face inside the circle',
                 style: const TextStyle(
                   color: Colors.white,
                   fontSize: 18,
@@ -1120,18 +1307,22 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
               ),
               const SizedBox(height: 8),
               Text(
-                'Auto-capture in progress',
+                _currentCaptureIndex == 0
+                    ? 'Center your face in the circle'
+                    : _currentCaptureIndex == 1
+                    ? 'Follow the arrows to turn RIGHT'
+                    : 'Follow the arrows to turn LEFT',
                 style: TextStyle(
                   color: Colors.white.withOpacity(0.7),
                   fontSize: 14,
                 ),
               ),
-              const SizedBox(height: 32),
+              const SizedBox(height: 24),
 
               AnimatedContainer(
                 duration: const Duration(milliseconds: 200),
-                width: 80,
-                height: 80,
+                width: 60,
+                height: 60,
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
                   color: _isCapturing
@@ -1139,22 +1330,23 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
                       : Colors.white.withOpacity(0.3),
                   border: Border.all(
                     color: Colors.white,
-                    width: 3,
+                    width: 2,
                   ),
                 ),
                 child: Center(
                   child: _isCapturing
                       ? const CircularProgressIndicator(
-                    strokeWidth: 3,
+                    strokeWidth: 2,
                     valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
                   )
                       : Icon(
                     Icons.camera_alt,
-                    size: 36,
+                    size: 28,
                     color: Colors.white.withOpacity(0.8),
                   ),
                 ),
               ),
+              const SizedBox(height: 20),
             ],
           ),
         ),
@@ -1322,5 +1514,182 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
         ),
       ),
     );
+  }
+
+  // NEW: Custom animated arrow indicators for turning left/right
+  Widget _buildArrowIndicators() {
+    // Only show arrows for step 2 (turn right) and step 3 (turn left)
+    if (_currentCaptureIndex == 0) {
+      return const SizedBox.shrink();
+    }
+
+    // Determine which direction to show arrows
+    final bool showRightDirectionArrows = _currentCaptureIndex == 1; // Turn RIGHT
+    final bool showLeftDirectionArrows = _currentCaptureIndex == 2;  // Turn LEFT
+
+    return AnimatedBuilder(
+      animation: _arrowAnimationController,
+      builder: (context, child) {
+        final screenHeight = MediaQuery.of(context).size.height;
+        final offsetValue = _arrowAnimationController.value * 30; // Movement range
+
+        return Stack(
+          children: [
+            // LEFT SIDE ARROWS
+            if (showRightDirectionArrows) ...[
+              // Left side - pointing RIGHT (3 arrows)
+              _buildMovingArrow(
+                left: 20 + offsetValue,
+                top: screenHeight * 0.30,
+                isPointingRight: true,
+              ),
+              _buildMovingArrow(
+                left: 20 + offsetValue,
+                top: screenHeight * 0.40,
+                isPointingRight: true,
+              ),
+              _buildMovingArrow(
+                left: 20 + offsetValue,
+                top: screenHeight * 0.50,
+                isPointingRight: true,
+              ),
+            ],
+            if (showLeftDirectionArrows) ...[
+              // Left side - pointing LEFT (3 arrows)
+              _buildMovingArrow(
+                left: 50 - offsetValue,
+                top: screenHeight * 0.30,
+                isPointingRight: false,
+              ),
+              _buildMovingArrow(
+                left: 50 - offsetValue,
+                top: screenHeight * 0.40,
+                isPointingRight: false,
+              ),
+              _buildMovingArrow(
+                left: 50 - offsetValue,
+                top: screenHeight * 0.50,
+                isPointingRight: false,
+              ),
+            ],
+
+            // RIGHT SIDE ARROWS
+            if (showRightDirectionArrows) ...[
+              // Right side - pointing RIGHT (3 arrows)
+              _buildMovingArrow(
+                right: 50 - offsetValue,
+                top: screenHeight * 0.30,
+                isPointingRight: true,
+              ),
+              _buildMovingArrow(
+                right: 50 - offsetValue,
+                top: screenHeight * 0.40,
+                isPointingRight: true,
+              ),
+              _buildMovingArrow(
+                right: 50 - offsetValue,
+                top: screenHeight * 0.50,
+                isPointingRight: true,
+              ),
+            ],
+            if (showLeftDirectionArrows) ...[
+              // Right side - pointing LEFT (3 arrows)
+              _buildMovingArrow(
+                right: 20 + offsetValue,
+                top: screenHeight * 0.30,
+                isPointingRight: false,
+              ),
+              _buildMovingArrow(
+                right: 20 + offsetValue,
+                top: screenHeight * 0.40,
+                isPointingRight: false,
+              ),
+              _buildMovingArrow(
+                right: 20 + offsetValue,
+                top: screenHeight * 0.50,
+                isPointingRight: false,
+              ),
+            ],
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _buildMovingArrow({
+    double? left,
+    double? right,
+    required double top,
+    required bool isPointingRight,
+  }) {
+    return Positioned(
+      left: left,
+      right: right,
+      top: top,
+      child: CustomPaint(
+        size: const Size(30, 22),
+        painter: _ArrowPainter(
+          isPointingRight: isPointingRight,
+          color: const Color(0xFF10b981),
+        ),
+      ),
+    );
+  }
+}
+
+// Custom Painter for directional arrows
+class _ArrowPainter extends CustomPainter {
+  final bool isPointingRight;
+  final Color color;
+
+  _ArrowPainter({
+    required this.isPointingRight,
+    required this.color,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = color.withOpacity(0.7)
+      ..style = PaintingStyle.fill
+      ..strokeWidth = 3;
+
+    final path = Path();
+
+    if (isPointingRight) {
+      // Right-pointing arrow: ▶
+      path.moveTo(0, 0);
+      path.lineTo(size.width, size.height / 2);
+      path.lineTo(0, size.height);
+      path.lineTo(size.width * 0.2, size.height / 2);
+      path.close();
+    } else {
+      // Left-pointing arrow: ◀
+      path.moveTo(size.width, 0);
+      path.lineTo(0, size.height / 2);
+      path.lineTo(size.width, size.height);
+      path.lineTo(size.width * 0.8, size.height / 2);
+      path.close();
+    }
+
+    // Draw shadow/glow effect
+    canvas.drawShadow(path, color, 8.0, true);
+
+    // Draw the arrow
+    canvas.drawPath(path, paint);
+
+    // Add border for better visibility
+    final borderPaint = Paint()
+      ..color = Colors.white.withOpacity(0.3)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.5;
+
+    canvas.drawPath(path, borderPaint);
+  }
+
+  @override
+  bool shouldRepaint(_ArrowPainter oldDelegate) {
+    return oldDelegate.isPointingRight != isPointingRight ||
+        oldDelegate.color != color;
   }
 }
