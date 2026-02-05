@@ -16,6 +16,7 @@ dependencies:
   tflite_flutter: ^0.12.1
   image: ^4.0.14
   camera: ^0.11.3
+  flutter_tts: ^4.2.5
 
 dev_dependencies:
   flutter_test:
