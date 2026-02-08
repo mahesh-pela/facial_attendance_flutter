@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 import 'dart:io';
 import 'dart:math' as math;
+import 'package:face_attendance/manager/mydio.dart';
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
@@ -17,7 +18,8 @@ class RegisterUser extends StatefulWidget {
   State<RegisterUser> createState() => _RegisterUserState();
 }
 
-class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMixin {
+class _RegisterUserState extends State<RegisterUser>
+    with TickerProviderStateMixin {
   late CameraController _cameraController;
   late List<CameraDescription> _cameras;
   late AnimationController _pulseController;
@@ -52,15 +54,18 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
 
   late Interpreter _interpreter;
   late int _embeddingSize;
+  bool isFetchingUsersData = false;
 
   List<List<double>> _capturedEmbeddings = [];
   static const int _requiredEmbeddings = 3;
 
-  final Dio _dio = Dio(BaseOptions(
-    baseUrl: 'http://103.250.132.138:8886/api/v1',
-    connectTimeout: const Duration(seconds: 30),
-    receiveTimeout: const Duration(seconds: 30),
-  ));
+  final Dio _dio = Dio(
+    BaseOptions(
+      baseUrl: 'http://103.250.132.138:8886/api/v1',
+      connectTimeout: const Duration(seconds: 30),
+      receiveTimeout: const Duration(seconds: 30),
+    ),
+  );
 
   // Auto-capture variables
   int _currentCaptureIndex = 0;
@@ -92,12 +97,15 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
   String _feedbackMessage = '';
   Color _feedbackColor = Colors.white;
   bool _showFeedback = false;
+  List<dynamic> usersList = [];
+  String? selectedUser;
 
   @override
   void initState() {
     super.initState();
     _initializeCamera();
     _loadModel();
+    getUsers();
 
     _pulseController = AnimationController(
       duration: const Duration(milliseconds: 2000),
@@ -135,7 +143,7 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
     _cameras = await availableCameras();
     _cameraController = CameraController(
       _cameras.firstWhere(
-            (c) => c.lensDirection == CameraLensDirection.front,
+        (c) => c.lensDirection == CameraLensDirection.front,
         orElse: () => _cameras.first,
       ),
       ResolutionPreset.high,
@@ -171,7 +179,11 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
   }
 
   //method for arrow indicators
-  void _updateArrowIndicators(Face face, double imageWidth, double imageHeight) {
+  void _updateArrowIndicators(
+    Face face,
+    double imageWidth,
+    double imageHeight,
+  ) {
     final circleCenterX = imageWidth * _circleCenterX;
     final circleCenterY = imageHeight * _circleCenterY;
     final circleRadius = imageWidth * _circleRadiusPercent;
@@ -226,12 +238,15 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
     });
   }
 
-
   void _startContinuousFaceDetection() {
     _faceDetectionTimer?.cancel();
 
-    _faceDetectionTimer = Timer.periodic(const Duration(milliseconds: 500), (timer) async {
-      if (!_isAutoCaptureActive || _isCapturing || _currentCaptureIndex >= _requiredEmbeddings) {
+    _faceDetectionTimer = Timer.periodic(const Duration(milliseconds: 500), (
+      timer,
+    ) async {
+      if (!_isAutoCaptureActive ||
+          _isCapturing ||
+          _currentCaptureIndex >= _requiredEmbeddings) {
         timer.cancel();
         return;
       }
@@ -258,14 +273,18 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
           _isDetectionInProgress = false;
           await _attemptAutoCapture();
 
-          if (_isAutoCaptureActive && _currentCaptureIndex < _requiredEmbeddings) {
+          if (_isAutoCaptureActive &&
+              _currentCaptureIndex < _requiredEmbeddings) {
             Future.delayed(const Duration(milliseconds: 500), () {
               _startContinuousFaceDetection();
             });
           }
         } else {
           // Update real-time feedback
-          _updateFeedback(result['message'] ?? '', result['isWarning'] ?? false);
+          _updateFeedback(
+            result['message'] ?? '',
+            result['isWarning'] ?? false,
+          );
           _isDetectionInProgress = false;
         }
       } catch (e) {
@@ -284,17 +303,22 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
     }
   }
 
-  Future<Map<String, dynamic>> _quickFaceValidation(List<int> imageBytes) async {
+  Future<Map<String, dynamic>> _quickFaceValidation(
+    List<int> imageBytes,
+  ) async {
     try {
       final image = img.decodeImage(Uint8List.fromList(imageBytes))!;
-      final temp = File('${Directory.systemTemp.path}/face_check_${DateTime.now().millisecondsSinceEpoch}.jpg')
-        ..writeAsBytesSync(imageBytes);
+      final temp = File(
+        '${Directory.systemTemp.path}/face_check_${DateTime.now().millisecondsSinceEpoch}.jpg',
+      )..writeAsBytesSync(imageBytes);
 
       final faces = await _photoDetector.processImage(
         InputImage.fromFilePath(temp.path),
       );
 
-      try { await temp.delete(); } catch (_) {}
+      try {
+        await temp.delete();
+      } catch (_) {}
 
       if (faces.isEmpty) {
         // Hide arrows when no face detected
@@ -306,20 +330,36 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
             _showDownArrow = false;
           });
         }
-        return {'isValid': false, 'message': 'No face detected', 'isWarning': false};
+        return {
+          'isValid': false,
+          'message': 'No face detected',
+          'isWarning': false,
+        };
       }
 
       final face = faces.first;
-      _updateArrowIndicators(face, image.width.toDouble(), image.height.toDouble());
+      _updateArrowIndicators(
+        face,
+        image.width.toDouble(),
+        image.height.toDouble(),
+      );
 
       // FACE SIZE CHECK
       final faceWidthRatio = face.boundingBox.width / image.width;
       final faceHeightRatio = face.boundingBox.height / image.height;
       if (faceWidthRatio < _minFaceSize || faceWidthRatio > _maxFaceSize) {
-        return {'isValid': false, 'message': 'Adjust distance from camera', 'isWarning': true};
+        return {
+          'isValid': false,
+          'message': 'Adjust distance from camera',
+          'isWarning': true,
+        };
       }
       if (faceHeightRatio < _minFaceHeightRatio) {
-        return {'isValid': false, 'message': 'Move closer - show your full face', 'isWarning': true};
+        return {
+          'isValid': false,
+          'message': 'Move closer - show your full face',
+          'isWarning': true,
+        };
       }
 
       // LANDMARK CHECK (Center Pose)
@@ -337,7 +377,11 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
 
         final landmarks = face.landmarks;
         if (requiredLandmarks.any((lm) => landmarks[lm] == null)) {
-          return {'isValid': false, 'message': 'Show full face - eyes, nose, mouth', 'isWarning': true};
+          return {
+            'isValid': false,
+            'message': 'Show full face - eyes, nose, mouth',
+            'isWarning': true,
+          };
         }
 
         // Ensure all critical landmarks are inside the circle
@@ -349,42 +393,75 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
           final l = landmarks[lm]!;
           final dx = l.position.x - circleCenterX;
           final dy = l.position.y - circleCenterY;
-          final distance = math.sqrt(dx*dx + dy*dy);
+          final distance = math.sqrt(dx * dx + dy * dy);
           if (distance > circleRadius * 0.8) {
-            return {'isValid': false, 'message': 'Position face fully inside the circle', 'isWarning': true};
+            return {
+              'isValid': false,
+              'message': 'Position face fully inside the circle',
+              'isWarning': true,
+            };
           }
         }
       }
 
       // NEW: Check if entire face bounding box is within circle
-      if (!_isFullFaceInsideCircle(face, image.width.toDouble(), image.height.toDouble())) {
-        return {'isValid': false, 'message': 'Center your face better in the circle', 'isWarning': true};
+      if (!_isFullFaceInsideCircle(
+        face,
+        image.width.toDouble(),
+        image.height.toDouble(),
+      )) {
+        return {
+          'isValid': false,
+          'message': 'Center your face better in the circle',
+          'isWarning': true,
+        };
       }
 
       // NEW: Verify face proportions are correct (not stretched/cropped)
       final faceAspectRatio = face.boundingBox.width / face.boundingBox.height;
       if (faceAspectRatio < 0.7 || faceAspectRatio > 1.3) {
-        return {'isValid': false, 'message': 'Face appears distorted. Look straight', 'isWarning': true};
+        return {
+          'isValid': false,
+          'message': 'Face appears distorted. Look straight',
+          'isWarning': true,
+        };
       }
 
       // HEAD POSE
       if (!_isCorrectHeadPose(face)) {
-        return {'isValid': false, 'message': _captureInstructions[_currentCaptureIndex], 'isWarning': true};
+        return {
+          'isValid': false,
+          'message': _captureInstructions[_currentCaptureIndex],
+          'isWarning': true,
+        };
       }
 
       // EYES OPEN
       if ((face.leftEyeOpenProbability ?? 1.0) < _minEyeOpenProbability ||
           (face.rightEyeOpenProbability ?? 1.0) < _minEyeOpenProbability) {
-        return {'isValid': false, 'message': 'Keep your eyes open', 'isWarning': true};
+        return {
+          'isValid': false,
+          'message': 'Keep your eyes open',
+          'isWarning': true,
+        };
       }
 
       // IMAGE SHARPNESS
       final isSharp = await _checkImageSharpness(image);
-      if (!isSharp) return {'isValid': false, 'message': 'Hold steady - image too blurry', 'isWarning': true};
+      if (!isSharp)
+        return {
+          'isValid': false,
+          'message': 'Hold steady - image too blurry',
+          'isWarning': true,
+        };
 
       return {'isValid': true, 'message': 'Good position!', 'isWarning': false};
     } catch (e) {
-      return {'isValid': false, 'message': 'Error validating face', 'isWarning': false};
+      return {
+        'isValid': false,
+        'message': 'Error validating face',
+        'isWarning': false,
+      };
     }
   }
 
@@ -395,11 +472,20 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
       final sampleSize = 100;
 
       List<int> grayValues = [];
-      for (int y = centerY - sampleSize; y < centerY + sampleSize && y < image.height; y++) {
-        for (int x = centerX - sampleSize; x < centerX + sampleSize && x < image.width; x++) {
+      for (
+        int y = centerY - sampleSize;
+        y < centerY + sampleSize && y < image.height;
+        y++
+      ) {
+        for (
+          int x = centerX - sampleSize;
+          x < centerX + sampleSize && x < image.width;
+          x++
+        ) {
           if (y >= 0 && x >= 0) {
             final pixel = image.getPixel(x, y);
-            final gray = (0.299 * pixel.r + 0.587 * pixel.g + 0.114 * pixel.b).toInt();
+            final gray = (0.299 * pixel.r + 0.587 * pixel.g + 0.114 * pixel.b)
+                .toInt();
             grayValues.add(gray);
           }
         }
@@ -408,7 +494,9 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
       if (grayValues.isEmpty) return true;
 
       final mean = grayValues.reduce((a, b) => a + b) / grayValues.length;
-      final variance = grayValues.map((v) => math.pow(v - mean, 2)).reduce((a, b) => a + b) / grayValues.length;
+      final variance =
+          grayValues.map((v) => math.pow(v - mean, 2)).reduce((a, b) => a + b) /
+          grayValues.length;
 
       return variance > 100;
     } catch (e) {
@@ -431,10 +519,13 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
 
       //strict pre-check before capture
       final validation = await _quickFaceValidation(bytes);
-      if(validation["isValid"] != true){
-        _updateFeedback(validation['message'] ?? 'Adjust your face position', validation['isWarning'] ?? true);
+      if (validation["isValid"] != true) {
+        _updateFeedback(
+          validation['message'] ?? 'Adjust your face position',
+          validation['isWarning'] ?? true,
+        );
         _instructionViolationCount++;
-        if(_instructionViolationCount >= _maxViolations){
+        if (_instructionViolationCount >= _maxViolations) {
           _faceDetectionTimer?.cancel();
           _handleMaxViolations();
         }
@@ -470,8 +561,7 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
           _handleMaxViolations();
         }
       }
-    }
-    catch (e) {
+    } catch (e) {
       _instructionViolationCount++;
 
       if (_instructionViolationCount >= _maxViolations) {
@@ -496,10 +586,13 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
     });
   }
 
-  Future<Map<String, dynamic>> _validateAndGenerateEmbedding(List<int> imageBytes) async {
+  Future<Map<String, dynamic>> _validateAndGenerateEmbedding(
+    List<int> imageBytes,
+  ) async {
     final image = img.decodeImage(Uint8List.fromList(imageBytes))!;
-    final temp = File('${Directory.systemTemp.path}/face_${DateTime.now().millisecondsSinceEpoch}.jpg')
-      ..writeAsBytesSync(imageBytes);
+    final temp = File(
+      '${Directory.systemTemp.path}/face_${DateTime.now().millisecondsSinceEpoch}.jpg',
+    )..writeAsBytesSync(imageBytes);
 
     final faces = await _photoDetector.processImage(
       InputImage.fromFilePath(temp.path),
@@ -541,7 +634,11 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
     }
 
     // NEW: Check if entire face bounding box is within circle
-    if (!_isFullFaceInsideCircle(face, image.width.toDouble(), image.height.toDouble())) {
+    if (!_isFullFaceInsideCircle(
+      face,
+      image.width.toDouble(),
+      image.height.toDouble(),
+    )) {
       return {
         'success': false,
         'message': 'Position entire face inside the circle',
@@ -591,8 +688,8 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
         final landmark = landmarks[landmarkType];
         if (landmark != null) {
           final landmarkDist = math.sqrt(
-              math.pow(landmark.position.x - circleCenterX, 2) +
-                  math.pow(landmark.position.y - circleCenterY, 2)
+            math.pow(landmark.position.x - circleCenterX, 2) +
+                math.pow(landmark.position.y - circleCenterY, 2),
           );
 
           // Landmark must be well within circle (80% of radius)
@@ -606,16 +703,22 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
       if (validLandmarks < 8) {
         return {
           'success': false,
-          'message': 'Full face not detected. Show complete face inside circle.',
+          'message':
+              'Full face not detected. Show complete face inside circle.',
         };
       }
     }
 
     // Validate if face landmarks are within the circle boundary
-    if (!_areLandmarksInCircle(face, image.width.toDouble(), image.height.toDouble())) {
+    if (!_areLandmarksInCircle(
+      face,
+      image.width.toDouble(),
+      image.height.toDouble(),
+    )) {
       return {
         'success': false,
-        'message': 'Face is outside the circle. Please position yourself correctly.',
+        'message':
+            'Face is outside the circle. Please position yourself correctly.',
       };
     }
 
@@ -629,13 +732,11 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
     }
 
     // Validate eyes are open
-    if (face.leftEyeOpenProbability != null && face.rightEyeOpenProbability != null) {
+    if (face.leftEyeOpenProbability != null &&
+        face.rightEyeOpenProbability != null) {
       if (face.leftEyeOpenProbability! < _minEyeOpenProbability ||
           face.rightEyeOpenProbability! < _minEyeOpenProbability) {
-        return {
-          'success': false,
-          'message': 'Please keep your eyes open.',
-        };
+        return {'success': false, 'message': 'Please keep your eyes open.'};
       }
     }
 
@@ -659,25 +760,33 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
 
     // Generate embedding from aligned face
     final padding = (face.boundingBox.width * 0.25).toInt();
-    final x = (face.boundingBox.left - padding).clamp(0, alignedImage.width - 1).toInt();
-    final y = (face.boundingBox.top - padding).clamp(0, alignedImage.height - 1).toInt();
-    final w = (face.boundingBox.width + padding * 2).clamp(1, alignedImage.width - x).toInt();
-    final h = (face.boundingBox.height + padding * 2).clamp(1, alignedImage.height - y).toInt();
+    final x = (face.boundingBox.left - padding)
+        .clamp(0, alignedImage.width - 1)
+        .toInt();
+    final y = (face.boundingBox.top - padding)
+        .clamp(0, alignedImage.height - 1)
+        .toInt();
+    final w = (face.boundingBox.width + padding * 2)
+        .clamp(1, alignedImage.width - x)
+        .toInt();
+    final h = (face.boundingBox.height + padding * 2)
+        .clamp(1, alignedImage.height - y)
+        .toInt();
 
     final cropped = img.copyCrop(alignedImage, x: x, y: y, width: w, height: h);
     final resized = img.copyResizeCropSquare(cropped, size: 112);
 
     final input = _imageToFloat32(resized);
-    final output = List.filled(_embeddingSize, 0.0).reshape([1, _embeddingSize]);
+    final output = List.filled(
+      _embeddingSize,
+      0.0,
+    ).reshape([1, _embeddingSize]);
     _interpreter.run(input, output);
 
     final rawEmbedding = List<double>.from(output.reshape([_embeddingSize]));
     final normalizedEmbedding = _l2Normalize(rawEmbedding);
 
-    return {
-      'success': true,
-      'embedding': normalizedEmbedding,
-    };
+    return {'success': true, 'embedding': normalizedEmbedding};
   }
 
   Future<img.Image?> _alignFaceWithLandmarks(img.Image image, Face face) async {
@@ -792,7 +901,11 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
     }
   }
 
-  bool _isFullFaceInsideCircle(Face face, double imageWidth, double imageHeight) {
+  bool _isFullFaceInsideCircle(
+    Face face,
+    double imageWidth,
+    double imageHeight,
+  ) {
     final circleCenterX = imageWidth * _circleCenterX;
     final circleCenterY = imageHeight * _circleCenterY;
     final circleRadius = imageWidth * _circleRadiusPercent;
@@ -805,8 +918,8 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
 
     // Calculate distance from face center to circle center
     final centerDistance = math.sqrt(
-        math.pow(faceCenterX - circleCenterX, 2) +
-            math.pow(faceCenterY - circleCenterY, 2)
+      math.pow(faceCenterX - circleCenterX, 2) +
+          math.pow(faceCenterY - circleCenterY, 2),
     );
 
     // Face center should be within 40% of circle radius from center
@@ -876,22 +989,6 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
   }
 
   Future<void> _registerUser() async {
-    if (_nameController.text.trim().isEmpty) {
-      _showError('Please enter your name');
-      return;
-    }
-
-    if (_emailController.text.trim().isEmpty) {
-      _showError('Please enter your email');
-      return;
-    }
-
-    final emailRegex = RegExp(r'^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}$');
-    if (!emailRegex.hasMatch(_emailController.text.trim())) {
-      _showError('Please enter a valid email address');
-      return;
-    }
-
     setState(() => _isProcessing = true);
 
     try {
@@ -901,16 +998,9 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
         }
       }
 
-      final response = await _dio.post(
-        '/addUser',
-        data: {
-          'name': _nameController.text.trim(),
-          'email': _emailController.text.trim(),
-          'phone': _phoneController.text.trim().isEmpty
-              ? null
-              : _phoneController.text.trim(),
-          'faceEmbedding': _capturedEmbeddings,
-        },
+      final response = await(await MyDio().getDio()).post(
+        '/users/face-registartion',
+        data: {'user_id': selectedUser, 'faceEmbedding': _capturedEmbeddings},
       );
 
       _showSuccessDialog();
@@ -932,6 +1022,26 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
       if (mounted) {
         setState(() => _isProcessing = false);
       }
+    }
+  }
+
+  Future<void> getUsers() async {
+    setState(() {
+      isFetchingUsersData = true;
+    });
+    try {
+      var response = await (await MyDio().getDio()).get(
+        "/settings/users?noLimit=true",
+      );
+      usersList = response.data["data"] ?? [];
+      debugPrint("success getting users data $usersList");
+      setState(() {});
+    } catch (e) {
+      debugPrint("error getting user data $e");
+    } finally {
+      setState(() {
+        isFetchingUsersData = false;
+      });
     }
   }
 
@@ -994,17 +1104,17 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
                 style: ElevatedButton.styleFrom(
                   backgroundColor: Colors.white,
                   foregroundColor: const Color(0xFF667eea),
-                  padding: const EdgeInsets.symmetric(horizontal: 48, vertical: 16),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 48,
+                    vertical: 16,
+                  ),
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(30),
                   ),
                 ),
                 child: const Text(
                   'Continue',
-                  style: TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w600,
-                  ),
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
                 ),
               ),
             ],
@@ -1055,111 +1165,118 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
       backgroundColor: const Color(0xFF0f172a),
       body: _isInitialized
           ? Stack(
-        children: [
-          Positioned.fill(
-            child: ClipRRect(
-              child: FittedBox(
-                fit: BoxFit.cover,
-                child: SizedBox(
-                  width: _cameraController.value.previewSize?.height ?? 1,
-                  height: _cameraController.value.previewSize?.width ?? 1,
-                  child: CameraPreview(_cameraController),
-                ),
-              ),
-            ),
-          ),
-
-          Positioned.fill(
-            child: Container(
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.topCenter,
-                  end: Alignment.bottomCenter,
-                  colors: [
-                    Colors.black.withOpacity(0.6),
-                    Colors.transparent,
-                    Colors.black.withOpacity(0.8),
-                  ],
-                  stops: const [0.0, 0.3, 1.0],
-                ),
-              ),
-            ),
-          ),
-
-          SafeArea(
-            child: Padding(
-              padding: const EdgeInsets.all(16.0),
-              child: Row(
-                children: [
-                  IconButton(
-                    onPressed: () => Navigator.pop(context),
-                    icon: const Icon(Icons.arrow_back_ios, color: Colors.white),
-                    style: IconButton.styleFrom(
-                      backgroundColor: Colors.white.withOpacity(0.2),
-                    ),
-                  ),
-                  const Spacer(),
-                  if (_capturedEmbeddings.isNotEmpty && !_isAutoCaptureActive && !_showForm)
-                    IconButton(
-                      onPressed: _resetCapture,
-                      icon: const Icon(Icons.refresh, color: Colors.white),
-                      style: IconButton.styleFrom(
-                        backgroundColor: Colors.white.withOpacity(0.2),
+              children: [
+                Positioned.fill(
+                  child: ClipRRect(
+                    child: FittedBox(
+                      fit: BoxFit.cover,
+                      child: SizedBox(
+                        width: _cameraController.value.previewSize?.height ?? 1,
+                        height: _cameraController.value.previewSize?.width ?? 1,
+                        child: CameraPreview(_cameraController),
                       ),
                     ),
-                ],
-              ),
-            ),
-          ),
-
-          if (_showFeedback && !_showForm)
-            Positioned(
-              top: 100,
-              left: 0,
-              right: 0,
-              child: Center(
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-                  decoration: BoxDecoration(
-                    color: _feedbackColor.withOpacity(0.9),
-                    borderRadius: BorderRadius.circular(12),
                   ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(
-                        _feedbackColor == Colors.red
-                            ? Icons.warning_amber_rounded
-                            : Icons.info_outline,
-                        color: Colors.white,
-                        size: 20,
+                ),
+
+                Positioned.fill(
+                  child: Container(
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        begin: Alignment.topCenter,
+                        end: Alignment.bottomCenter,
+                        colors: [
+                          Colors.black.withOpacity(0.6),
+                          Colors.transparent,
+                          Colors.black.withOpacity(0.8),
+                        ],
+                        stops: const [0.0, 0.3, 1.0],
                       ),
-                      const SizedBox(width: 8),
-                      Flexible(
-                        child: Text(
-                          _feedbackMessage,
-                          style: const TextStyle(
+                    ),
+                  ),
+                ),
+
+                SafeArea(
+                  child: Padding(
+                    padding: const EdgeInsets.all(16.0),
+                    child: Row(
+                      children: [
+                        IconButton(
+                          onPressed: () => Navigator.pop(context),
+                          icon: const Icon(
+                            Icons.arrow_back_ios,
                             color: Colors.white,
-                            fontSize: 14,
-                            fontWeight: FontWeight.w600,
                           ),
-                          textAlign: TextAlign.center,
+                          style: IconButton.styleFrom(
+                            backgroundColor: Colors.white.withOpacity(0.2),
+                          ),
+                        ),
+                        const Spacer(),
+                        if (_capturedEmbeddings.isNotEmpty &&
+                            !_isAutoCaptureActive &&
+                            !_showForm)
+                          IconButton(
+                            onPressed: _resetCapture,
+                            icon: const Icon(
+                              Icons.refresh,
+                              color: Colors.white,
+                            ),
+                            style: IconButton.styleFrom(
+                              backgroundColor: Colors.white.withOpacity(0.2),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+
+                if (_showFeedback && !_showForm)
+                  Positioned(
+                    top: 100,
+                    left: 0,
+                    right: 0,
+                    child: Center(
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 20,
+                          vertical: 12,
+                        ),
+                        decoration: BoxDecoration(
+                          color: _feedbackColor.withOpacity(0.9),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              _feedbackColor == Colors.red
+                                  ? Icons.warning_amber_rounded
+                                  : Icons.info_outline,
+                              color: Colors.white,
+                              size: 20,
+                            ),
+                            const SizedBox(width: 8),
+                            Flexible(
+                              child: Text(
+                                _feedbackMessage,
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                                textAlign: TextAlign.center,
+                              ),
+                            ),
+                          ],
                         ),
                       ),
-                    ],
+                    ),
                   ),
-                ),
-              ),
-            ),
 
-          if (!_showForm) _buildCameraUI() else _buildFormUI(),
-        ],
-      )
-          : const Center(
-        child: CircularProgressIndicator(
-          color: Colors.white,
-        ),
-      ),
+                if (!_showForm) _buildCameraUI() else _buildFormUI(),
+              ],
+            )
+          : const Center(child: CircularProgressIndicator(color: Colors.white)),
     );
   }
 
@@ -1188,7 +1305,9 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
                               decoration: BoxDecoration(
                                 shape: BoxShape.circle,
                                 border: Border.all(
-                                  color: Colors.red.withOpacity(0.3 - (_pulseController.value * 0.2)),
+                                  color: Colors.red.withOpacity(
+                                    0.3 - (_pulseController.value * 0.2),
+                                  ),
                                   width: 2,
                                 ),
                               ),
@@ -1209,12 +1328,16 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
                                     ),
                                     boxShadow: [
                                       BoxShadow(
-                                        color: (_capturedEmbeddings.isEmpty
-                                            ? Colors.red
-                                            : const Color(0xFF10b981))
-                                            .withOpacity(0.5),
-                                        blurRadius: 20 + (_captureController.value * 20),
-                                        spreadRadius: 5 + (_captureController.value * 10),
+                                        color:
+                                            (_capturedEmbeddings.isEmpty
+                                                    ? Colors.red
+                                                    : const Color(0xFF10b981))
+                                                .withOpacity(0.5),
+                                        blurRadius:
+                                            20 +
+                                            (_captureController.value * 20),
+                                        spreadRadius:
+                                            5 + (_captureController.value * 10),
                                       ),
                                     ],
                                   ),
@@ -1241,7 +1364,7 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: List.generate(
                         _requiredEmbeddings,
-                            (index) => AnimatedContainer(
+                        (index) => AnimatedContainer(
                           duration: const Duration(milliseconds: 300),
                           margin: const EdgeInsets.symmetric(horizontal: 6),
                           width: index < _capturedEmbeddings.length ? 40 : 12,
@@ -1270,9 +1393,13 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
           padding: const EdgeInsets.all(16),
           child: Column(
             children: [
-              if (_isAutoCaptureActive && _currentCaptureIndex < _requiredEmbeddings)
+              if (_isAutoCaptureActive &&
+                  _currentCaptureIndex < _requiredEmbeddings)
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 20,
+                    vertical: 12,
+                  ),
                   decoration: BoxDecoration(
                     color: const Color(0xFF10b981).withOpacity(0.2),
                     borderRadius: BorderRadius.circular(12),
@@ -1328,22 +1455,21 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
                   color: _isCapturing
                       ? const Color(0xFF10b981).withOpacity(0.3)
                       : Colors.white.withOpacity(0.3),
-                  border: Border.all(
-                    color: Colors.white,
-                    width: 2,
-                  ),
+                  border: Border.all(color: Colors.white, width: 2),
                 ),
                 child: Center(
                   child: _isCapturing
                       ? const CircularProgressIndicator(
-                    strokeWidth: 2,
-                    valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
-                  )
+                          strokeWidth: 2,
+                          valueColor: AlwaysStoppedAnimation<Color>(
+                            Colors.white,
+                          ),
+                        )
                       : Icon(
-                    Icons.camera_alt,
-                    size: 28,
-                    color: Colors.white.withOpacity(0.8),
-                  ),
+                          Icons.camera_alt,
+                          size: 28,
+                          color: Colors.white.withOpacity(0.8),
+                        ),
                 ),
               ),
               const SizedBox(height: 20),
@@ -1360,10 +1486,7 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
         gradient: LinearGradient(
           begin: Alignment.topCenter,
           end: Alignment.bottomCenter,
-          colors: [
-            Colors.black.withOpacity(0.8),
-            const Color(0xFF0f172a),
-          ],
+          colors: [Colors.black.withOpacity(0.8), const Color(0xFF0f172a)],
         ),
       ),
       child: SafeArea(
@@ -1411,33 +1534,57 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
               ),
 
               const SizedBox(height: 32),
-
-              _buildTextField(
-                controller: _nameController,
-                label: 'Full Name',
-                icon: Icons.person_outline,
+              Text(
+                "Select User",
+                style: TextStyle(fontFamily: "Fredoka", color: Colors.white, fontSize: 16),
+              ),
+              SizedBox(height: 8,),
+              DropdownButtonFormField(
+                isExpanded: true,
+                menuMaxHeight: 300,
+                style: TextStyle(color: Colors.white, fontFamily: "Fredoka"),
+                // 👈 selected text color
+                validator: (value){
+                  if(value == null){
+                    return "Please select atleast one user";
+                  }
+                  return null;
+                },
+                dropdownColor: Colors.black87,
+                // optional (menu background for dark theme)
+                decoration: InputDecoration(
+                  hintText: "Select User",
+                  hintStyle: TextStyle(
+                    color: Colors.white70,
+                    fontFamily: "Fredoka",
+                  ),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(10),
+                    borderSide: BorderSide(color: Colors.white),
+                  ),
+                ),
+                value: selectedUser,
+                items: usersList.map((users) {
+                  return DropdownMenuItem(
+                    value: users["_id"],
+                    child: Text(
+                      users["name"],
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontFamily: "Fredoka",
+                      ),
+                    ),
+                  );
+                }).toList(),
+                onChanged: (value) {
+                  setState(() {
+                    selectedUser = value.toString();
+                    debugPrint("Selected user $selectedUser");
+                  });
+                },
               ),
 
-              const SizedBox(height: 16),
-
-              _buildTextField(
-                controller: _emailController,
-                label: 'Email Address',
-                icon: Icons.email_outlined,
-                keyboardType: TextInputType.emailAddress,
-              ),
-
-              const SizedBox(height: 16),
-
-              _buildTextField(
-                controller: _phoneController,
-                label: 'Phone Number (Optional)',
-                icon: Icons.phone_outlined,
-                keyboardType: TextInputType.phone,
-              ),
-
-              const SizedBox(height: 24),
-
+              SizedBox(height: 15),
               SizedBox(
                 width: double.infinity,
                 height: 56,
@@ -1453,21 +1600,23 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
                   ),
                   child: _isProcessing
                       ? const SizedBox(
-                    height: 24,
-                    width: 24,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
-                    ),
-                  )
+                          height: 24,
+                          width: 24,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            valueColor: AlwaysStoppedAnimation<Color>(
+                              Colors.white,
+                            ),
+                          ),
+                        )
                       : const Text(
-                    'Complete Registration',
-                    style: TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.w600,
-                      color: Colors.white,
-                    ),
-                  ),
+                          'Complete Registration',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w600,
+                            color: Colors.white,
+                          ),
+                        ),
                 ),
               ),
             ],
@@ -1487,28 +1636,19 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
       decoration: BoxDecoration(
         color: Colors.white.withOpacity(0.05),
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(
-          color: Colors.white.withOpacity(0.1),
-          width: 1,
-        ),
+        border: Border.all(color: Colors.white.withOpacity(0.1), width: 1),
       ),
       child: TextField(
         controller: controller,
         keyboardType: keyboardType,
-        style: const TextStyle(
-          color: Colors.white,
-          fontSize: 15,
-        ),
+        style: const TextStyle(color: Colors.white, fontSize: 15),
         decoration: InputDecoration(
           labelText: label,
           labelStyle: TextStyle(
             fontSize: 14,
             color: Colors.white.withOpacity(0.6),
           ),
-          prefixIcon: Icon(
-            icon,
-            color: Colors.white.withOpacity(0.6),
-          ),
+          prefixIcon: Icon(icon, color: Colors.white.withOpacity(0.6)),
           border: InputBorder.none,
           contentPadding: const EdgeInsets.all(16),
         ),
@@ -1524,14 +1664,16 @@ class _RegisterUserState extends State<RegisterUser> with TickerProviderStateMix
     }
 
     // Determine which direction to show arrows
-    final bool showRightDirectionArrows = _currentCaptureIndex == 1; // Turn RIGHT
-    final bool showLeftDirectionArrows = _currentCaptureIndex == 2;  // Turn LEFT
+    final bool showRightDirectionArrows =
+        _currentCaptureIndex == 1; // Turn RIGHT
+    final bool showLeftDirectionArrows = _currentCaptureIndex == 2; // Turn LEFT
 
     return AnimatedBuilder(
       animation: _arrowAnimationController,
       builder: (context, child) {
         final screenHeight = MediaQuery.of(context).size.height;
-        final offsetValue = _arrowAnimationController.value * 30; // Movement range
+        final offsetValue =
+            _arrowAnimationController.value * 30; // Movement range
 
         return Stack(
           children: [
@@ -1642,10 +1784,7 @@ class _ArrowPainter extends CustomPainter {
   final bool isPointingRight;
   final Color color;
 
-  _ArrowPainter({
-    required this.isPointingRight,
-    required this.color,
-  });
+  _ArrowPainter({required this.isPointingRight, required this.color});
 
   @override
   void paint(Canvas canvas, Size size) {

@@ -2,10 +2,12 @@ import 'dart:convert';
 import 'dart:typed_data';
 import 'dart:io';
 import 'dart:math' as math;
+import 'package:face_attendance/manager/mydio.dart';
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_tts/flutter_tts.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import 'package:image/image.dart' as img;
 import 'package:tflite_flutter/tflite_flutter.dart';
@@ -115,6 +117,7 @@ class _MarkAttendanceState extends State<MarkAttendance>
     super.initState();
     _initializeCamera();
     _loadModel();
+    _determinePosition();
 
     flutterTts = FlutterTts();
     _initializeTTS();
@@ -153,11 +156,42 @@ class _MarkAttendanceState extends State<MarkAttendance>
     }
   }
 
+  Future<Position> _determinePosition() async {
+    bool serviceEnabled;
+    LocationPermission permission;
+
+    serviceEnabled = await Geolocator.isLocationServiceEnabled();
+    if (!serviceEnabled) {
+      return Future.error('Location services are disabled.');
+    }
+
+    permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+      if (permission == LocationPermission.denied) {
+        return Future.error('Location permissions are denied');
+      }
+    }
+
+    if (permission == LocationPermission.deniedForever) {
+      return Future.error(
+          'Location permissions are permanently denied, we cannot request permissions.');
+    }
+    return await Geolocator.getCurrentPosition();
+  }
+
   Future<void> _verifyWithBackend(List<double> embedding) async {
     try {
-      final res = await _dio.post(
-        '/verifyUser',
-        data: {'faceEmbedding': embedding},
+      Position position = await _determinePosition();
+      final res = await(await MyDio().getDio()).post(
+        '/users/face-attendance',
+        data: {
+          'faceEmbedding': embedding,
+          'location': {
+            'latitude': position.latitude,
+            'longitude': position.longitude,
+          }
+        },
       );
 
       if (res.data['success'] == true) {
@@ -747,6 +781,15 @@ class _MarkAttendanceState extends State<MarkAttendance>
                     ),
 
                     const Spacer(),
+                    Container(
+                      width: double.infinity,
+                      child: Row(
+                        children: [
+                          ElevatedButton(onPressed: (){}, child: Text("Check in")),
+                          ElevatedButton(onPressed: (){}, child: Text("Check Out")),
+                        ],
+                      ),
+                    ),
 
                     // Status card
                     Container(

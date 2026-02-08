@@ -1,6 +1,10 @@
+import 'package:face_attendance/businessSelector/apiSelectorByBusinessCode.dart';
 import 'package:face_attendance/dashboard/addUser.dart';
 import 'package:face_attendance/dashboard/markAttendance.dart';
+import 'package:face_attendance/manager/userProvider.dart';
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class MainScreen extends StatefulWidget {
   const MainScreen({super.key});
@@ -12,6 +16,8 @@ class MainScreen extends StatefulWidget {
 class _MainScreenState extends State<MainScreen> {
   @override
   Widget build(BuildContext context) {
+    final userProvider = Provider.of<UserProvider>(context, listen: false);
+
     return Scaffold(
       body: Container(
         decoration: BoxDecoration(
@@ -29,52 +35,86 @@ class _MainScreenState extends State<MainScreen> {
         child: SafeArea(
           child: Column(
             children: [
-              // App Bar
-              Padding(
-                padding: const EdgeInsets.symmetric(
-                    horizontal: 16.0, vertical: 16.0),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          "Face Recognition",
-                          style: TextStyle(
-                            fontSize: 24,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.white,
-                          ),
-                        ),
-                        SizedBox(height: 4),
-                        Text(
-                          "Secure Attendance System",
-                          style: TextStyle(
-                            fontSize: 14,
-                            color: Colors.white70,
-                          ),
-                        ),
-                      ],
+
+          Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 16.0),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    "Face Recognition",
+                    style: TextStyle(
+                      fontSize: 24,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white,
                     ),
-                    Container(
-                      width: 48,
-                      height: 48,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        border: Border.all(color: Colors.white30, width: 1.5),
-                      ),
-                      child: Icon(
-                        Icons.person_outline,
-                        color: Colors.white,
-                        size: 24,
-                      ),
+                  ),
+                  SizedBox(height: 4),
+                  Text(
+                    "Secure Attendance System",
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: Colors.white70,
                     ),
-                  ],
-                ),
+                  ),
+                ],
               ),
 
-              SizedBox(height: 25),
+              PopupMenuButton<String>(
+                offset: Offset(0, 50),
+                onSelected: (value) async{
+                  if (value == 'logout') {
+                    final SharedPreferences prefs = await SharedPreferences.getInstance();
+                    prefs.clear();
+                    Navigator.pushAndRemoveUntil(context, MaterialPageRoute(builder: (context)=>ApiSelectorByBusinessCodeScreen()), (route)=>false);
+                  }
+                },
+                itemBuilder: (context) => [
+                  PopupMenuItem<String>(
+                    enabled: false,
+                    child: Text(
+                      userProvider.userData["name"],
+                      style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black),
+                    ),
+                  ),
+
+                  PopupMenuDivider(),
+
+                  PopupMenuItem<String>(
+                    value: 'logout',
+                    child: Row(
+                      children: [
+                        Icon(Icons.logout, size: 18),
+                        SizedBox(width: 8),
+                        Text("Logout"),
+                      ],
+                    ),
+                  ),
+                ],
+                child: Container(
+                  width: 48,
+                  height: 48,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    border: Border.all(color: Colors.white30, width: 1.5),
+                  ),
+                  child: Icon(
+                    Icons.person_outline,
+                    color: Colors.white,
+                    size: 24,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+
+
+
+          SizedBox(height: 25),
 
               // Hero Section
               Expanded(
