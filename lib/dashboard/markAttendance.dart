@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 import 'dart:io';
 import 'dart:math' as math;
+import 'package:face_attendance/manager/dioErrorManager.dart';
 import 'package:face_attendance/manager/mydio.dart';
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
@@ -45,6 +46,9 @@ class _MarkAttendanceState extends State<MarkAttendance>
   int closedFrames = 0;
   static const int _requiredStableFrames = 3;
 
+  // Check-in/Check-out state
+  String _actionType = 'checkin'; // Default is check-in
+
   final FaceDetector _streamDetector = FaceDetector(
     options: FaceDetectorOptions(
       performanceMode: FaceDetectorMode.fast,
@@ -81,19 +85,15 @@ class _MarkAttendanceState extends State<MarkAttendance>
 
     if (left == null || right == null) return false;
 
-    // SIMPLE DETECTION: Check if both eyes are closed
-    bool eyesClosed =
-        left < 0.4 && right < 0.4; // More strict threshold (0.4 instead of 0.5)
+    bool eyesClosed = left < 0.4 && right < 0.4;
 
     if (eyesClosed && !_blinkDetected) {
-      // Quick validation: check if eyes were open in recent frames
       if (_eyesWereOpen) {
         _blinkDetected = true;
         _eyesWereOpen = false;
         return true;
       }
     } else if (left > 0.7 && right > 0.7) {
-      // Track when eyes are clearly open
       _eyesWereOpen = true;
     }
 
@@ -136,20 +136,13 @@ class _MarkAttendanceState extends State<MarkAttendance>
   Future<void> _initializeTTS() async {
     await flutterTts.setLanguage("en-US");
     await flutterTts.setSpeechRate(0.5);
-    // await flutterTts.setVoice({
-    //   // "name": "female",
-    //   "locale": "ne-NP",
-    // });
-
     await flutterTts.setVolume(1);
     await flutterTts.setPitch(1.1);
   }
 
   Future<void> _playSound(String userName) async {
     try {
-      final message =
-          "Dear $userName Your attendance has been done";
-
+      final message = "Dear $userName Your attendance has been done";
       await flutterTts.speak(message);
     } catch (e) {
       debugPrint("TTS Error: $e");
@@ -183,32 +176,39 @@ class _MarkAttendanceState extends State<MarkAttendance>
   Future<void> _verifyWithBackend(List<double> embedding) async {
     try {
       Position position = await _determinePosition();
-      final res = await(await MyDio().getDio()).post(
+      final res = await (await MyDio().getDio()).post(
         '/users/face-attendance',
         data: {
           'faceEmbedding': embedding,
-          'location': {
-            'latitude': position.latitude,
-            'longitude': position.longitude,
-          }
+          "location":
+          {
+            "type": "Point",
+            "coordinates": [
+              position.latitude,
+              position.longitude
+            ]
+          },
+
+          'action_type': _actionType,
         },
       );
 
       if (res.data['success'] == true) {
         _attendanceMarked = true;
         await _successController.forward();
-        final userName = res.data['user']['name'] ?? 'User';
+        final userName = res.data?['matchedUser']?['name'] ?? 'User';
         final similarity = res.data['similarity']?.toStringAsFixed(3) ?? 'N/A';
 
         await _playSound(userName);
         _showSuccessDialog(userName, similarity);
       } else {
         final similarity = res.data['similarity']?.toStringAsFixed(3) ?? 'N/A';
-        _resetAfterError('Face not recognized\n(Match: $similarity)');
+        _resetAfterError("", 'Face not recognized\n(Match: $similarity)');
       }
-    } catch (e) {
-      _resetAfterError('Network error. Please try again.');
+    }on DioException catch (e) {
+      _resetAfterError( "Failed", '${e.response?.data["message"]}');
     }
+
   }
 
   @override
@@ -227,7 +227,7 @@ class _MarkAttendanceState extends State<MarkAttendance>
     _cameras = await availableCameras();
     _cameraController = CameraController(
       _cameras.firstWhere(
-        (c) => c.lensDirection == CameraLensDirection.front,
+            (c) => c.lensDirection == CameraLensDirection.front,
         orElse: () => _cameras.first,
       ),
       ResolutionPreset.high,
@@ -301,7 +301,7 @@ class _MarkAttendanceState extends State<MarkAttendance>
             setState(() {
               _faceDetected = true;
               _verificationStatus =
-                  'Hold still... ($_faceDetectionCount/$_requiredStableFrames)';
+              'Hold still... ($_faceDetectionCount/$_requiredStableFrames)';
               _statusColor = const Color(0xFF10b981);
             });
 
@@ -352,7 +352,7 @@ class _MarkAttendanceState extends State<MarkAttendance>
       await _verifyWithBackend(embedding);
     } catch (e) {
       debugPrint('❌ Verification error: $e');
-      _resetAfterError(e.toString().replaceAll('Exception: ', ''));
+      _resetAfterError("",e.toString().replaceAll('Exception: ', ''));
     }
   }
 
@@ -423,20 +423,24 @@ class _MarkAttendanceState extends State<MarkAttendance>
     return buffer.buffer.asUint8List();
   }
 
-  void _resetAfterError(String msg) {
-    _faceDetectionCount = 0;
-    _blinkDetected = false;
-    _eyesWereOpen = false;
-    _initialHeadPose = null;
-    _headMovementDetected = false;
-    _livenessPassed = false;
+  void _resetAfterError(String? title, String msg) {
+    setState(() {
+      _faceDetectionCount = 0;
+      _blinkDetected = false;
+      _eyesWereOpen = false;
+      _initialHeadPose = null;
+      _headMovementDetected = false;
+      _livenessPassed = false;
+      _isProcessing = false;
+      _faceDetected = false;
+      _verificationStatus = 'Position your face in the frame';
+      _statusColor = const Color(0xFF60a5fa);
+    });
 
     if (_dialogOpen) return;
     _dialogOpen = true;
-    _showErrorDialog(msg).then((_) {
+    _showErrorDialog(title, msg).then((_) {
       _dialogOpen = false;
-      _isProcessing = false;
-      _faceDetectionCount = 0;
       if (!_attendanceMarked && mounted) {
         _startFaceDetection();
       }
@@ -475,9 +479,11 @@ class _MarkAttendanceState extends State<MarkAttendance>
                 child: const Icon(Icons.check, size: 48, color: Colors.white),
               ),
               const SizedBox(height: 24),
-              const Text(
-                'Attendance Marked',
-                style: TextStyle(
+              Text(
+                _actionType == 'checkin'
+                    ? 'Check-In Successful'
+                    : 'Check-Out Successful',
+                style: const TextStyle(
                   fontSize: 24,
                   fontWeight: FontWeight.bold,
                   color: Colors.white,
@@ -529,7 +535,7 @@ class _MarkAttendanceState extends State<MarkAttendance>
     _dialogOpen = false;
   }
 
-  Future<void> _showErrorDialog(String msg) {
+  Future<void> _showErrorDialog(String? title, String msg) {
     return showDialog(
       context: context,
       builder: (_) => Dialog(
@@ -552,14 +558,14 @@ class _MarkAttendanceState extends State<MarkAttendance>
                 ),
               ),
               const SizedBox(height: 24),
-              const Text(
-                'Verification Failed',
+              Text(
+                title ?? 'Verification Failed',
                 style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
               ),
               const SizedBox(height: 12),
               Text(
                 msg,
-                style: const TextStyle(fontSize: 14, color: Colors.grey),
+                style: TextStyle(fontSize: 14, color: Colors.black.withOpacity(0.7)),
                 textAlign: TextAlign.center,
               ),
               const SizedBox(height: 24),
@@ -575,7 +581,7 @@ class _MarkAttendanceState extends State<MarkAttendance>
                     borderRadius: BorderRadius.circular(12),
                   ),
                 ),
-                child: const Text('Try Again'),
+                child: const Text('Try Again', style: TextStyle(fontSize: 14, color: Colors.white),),
               ),
             ],
           ),
@@ -606,282 +612,360 @@ class _MarkAttendanceState extends State<MarkAttendance>
       backgroundColor: const Color(0xFF0f172a),
       body: _isInitialized
           ? Stack(
-              children: [
-                // Full-screen camera preview with proper aspect ratio
-                Positioned.fill(
-                  child: ClipRRect(
-                    child: FittedBox(
-                      fit: BoxFit.cover,
-                      child: SizedBox(
-                        width: _cameraController.value.previewSize?.height ?? 1,
-                        height: _cameraController.value.previewSize?.width ?? 1,
-                        child: CameraPreview(_cameraController),
-                      ),
+        children: [
+          // Full-screen camera preview with proper aspect ratio
+          Positioned.fill(
+            child: ClipRRect(
+              child: FittedBox(
+                fit: BoxFit.cover,
+                child: SizedBox(
+                  width: _cameraController.value.previewSize?.height ?? 1,
+                  height: _cameraController.value.previewSize?.width ?? 1,
+                  child: CameraPreview(_cameraController),
+                ),
+              ),
+            ),
+          ),
+
+          // Gradient overlays
+          Positioned.fill(
+            child: Container(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [
+                    Colors.black.withOpacity(0.7),
+                    Colors.transparent,
+                    Colors.black.withOpacity(0.8),
+                  ],
+                  stops: const [0.0, 0.4, 1.0],
+                ),
+              ),
+            ),
+          ),
+
+          // Top bar
+          SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.all(20.0),
+              child: Row(
+                children: [
+                  IconButton(
+                    onPressed: () => Navigator.pop(context),
+                    icon: const Icon(
+                      Icons.arrow_back_ios,
+                      color: Colors.white,
+                    ),
+                    style: IconButton.styleFrom(
+                      backgroundColor: Colors.white.withOpacity(0.15),
                     ),
                   ),
-                ),
-
-                // Gradient overlays
-                Positioned.fill(
-                  child: Container(
+                  const Spacer(),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 8,
+                    ),
                     decoration: BoxDecoration(
-                      gradient: LinearGradient(
-                        begin: Alignment.topCenter,
-                        end: Alignment.bottomCenter,
-                        colors: [
-                          Colors.black.withOpacity(0.7),
-                          Colors.transparent,
-                          Colors.black.withOpacity(0.8),
-                        ],
-                        stops: const [0.0, 0.4, 1.0],
-                      ),
+                      color: Colors.white.withOpacity(0.15),
+                      borderRadius: BorderRadius.circular(20),
                     ),
-                  ),
-                ),
-
-                // Top bar
-                SafeArea(
-                  child: Padding(
-                    padding: const EdgeInsets.all(20.0),
-                    child: Row(
+                    child: const Row(
                       children: [
-                        IconButton(
-                          onPressed: () => Navigator.pop(context),
-                          icon: const Icon(
-                            Icons.arrow_back_ios,
-                            color: Colors.white,
-                          ),
-                          style: IconButton.styleFrom(
-                            backgroundColor: Colors.white.withOpacity(0.15),
-                          ),
+                        Icon(
+                          Icons.security,
+                          color: Colors.white,
+                          size: 16,
                         ),
-                        const Spacer(),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 16,
-                            vertical: 8,
-                          ),
-                          decoration: BoxDecoration(
-                            color: Colors.white.withOpacity(0.15),
-                            borderRadius: BorderRadius.circular(20),
-                          ),
-                          child: const Row(
-                            children: [
-                              Icon(
-                                Icons.security,
-                                color: Colors.white,
-                                size: 16,
-                              ),
-                              SizedBox(width: 8),
-                              Text(
-                                'Secure',
-                                style: TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 12,
-                                ),
-                              ),
-                            ],
+                        SizedBox(width: 8),
+                        Text(
+                          'Secure',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 12,
                           ),
                         ),
                       ],
                     ),
                   ),
-                ),
+                ],
+              ),
+            ),
+          ),
 
-                // Main content
-                Column(
+          // Main content
+          Column(
+            children: [
+              const Spacer(),
+
+              // Title with action type
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 32),
+                child: Column(
                   children: [
-                    const Spacer(),
-
-                    // Title
-                    const Padding(
-                      padding: EdgeInsets.symmetric(horizontal: 32),
-                      child: Text(
-                        'Mark Attendance',
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontSize: 32,
-                          fontWeight: FontWeight.bold,
-                        ),
-                        textAlign: TextAlign.center,
+                    const Text(
+                      'Mark Attendance',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 32,
+                        fontWeight: FontWeight.bold,
                       ),
+                      textAlign: TextAlign.center,
                     ),
+                    const SizedBox(height: 12),
 
-                    const SizedBox(height: 60),
-
-                    // Face scanning area
-                    Center(
-                      child: Stack(
-                        alignment: Alignment.center,
-                        children: [
-                          // Scanning animation
-                          if (!_attendanceMarked)
-                            AnimatedBuilder(
-                              animation: _scanController,
-                              builder: (context, child) {
-                                return Container(
-                                  width: 280,
-                                  height: 350,
-                                  decoration: BoxDecoration(
-                                    shape: BoxShape.circle,
-                                    border: Border.all(
-                                      color: Colors.white.withOpacity(
-                                        0.3 * (1 - _scanController.value),
-                                      ),
-                                      width: 2,
-                                    ),
-                                  ),
-                                );
-                              },
-                            ),
-
-                          // Face guide
-                          AnimatedContainer(
-                            duration: const Duration(milliseconds: 300),
-                            width: 260,
-                            height: 330,
-                            decoration: BoxDecoration(
-                              shape: BoxShape.circle,
-                              border: Border.all(
-                                color: _attendanceMarked
-                                    ? const Color(0xFF10b981)
-                                    : (_faceDetected
-                                          ? const Color(0xFF10b981)
-                                          : Colors.white),
-                                width: 3,
-                              ),
-                              boxShadow: [
-                                BoxShadow(
-                                  color:
-                                      (_attendanceMarked || _faceDetected
-                                              ? const Color(0xFF10b981)
-                                              : Colors.white)
-                                          .withOpacity(0.5),
-                                  blurRadius: 30,
-                                  spreadRadius: 5,
-                                ),
-                              ],
-                            ),
-                            child: _attendanceMarked
-                                ? const Icon(
-                                    Icons.check_circle,
-                                    size: 100,
-                                    color: Color(0xFF10b981),
-                                  )
-                                : (_faceDetected
-                                      ? const Icon(
-                                          Icons.face,
-                                          size: 80,
-                                          color: Color(0xFF10b981),
-                                        )
-                                      : null),
-                          ),
-                        ],
-                      ),
-                    ),
-
-                    const Spacer(),
+                    // Check-in/Check-out toggle
                     Container(
-                      width: double.infinity,
-                      child: Row(
-                        children: [
-                          ElevatedButton(onPressed: (){}, child: Text("Check in")),
-                          ElevatedButton(onPressed: (){}, child: Text("Check Out")),
-                        ],
-                      ),
-                    ),
-
-                    // Status card
-                    Container(
-                      margin: const EdgeInsets.all(24),
-                      padding: const EdgeInsets.all(24),
+                      padding: const EdgeInsets.all(4),
                       decoration: BoxDecoration(
-                        color: Colors.black.withOpacity(0.6),
-                        borderRadius: BorderRadius.circular(24),
+                        color: Colors.white.withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(12),
                         border: Border.all(
-                          color: Colors.white.withOpacity(0.1),
+                          color: Colors.white.withOpacity(0.2),
                           width: 1,
                         ),
                       ),
-                      child: Column(
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
                         children: [
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              if (_isProcessing)
-                                Container(
-                                  width: 24,
-                                  height: 24,
-                                  margin: const EdgeInsets.only(right: 12),
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                    valueColor: AlwaysStoppedAnimation<Color>(
-                                      _statusColor,
-                                    ),
-                                  ),
-                                )
-                              else
-                                Icon(
-                                  _attendanceMarked
-                                      ? Icons.check_circle
-                                      : (_faceDetected
-                                            ? Icons.verified_user
-                                            : Icons.face_outlined),
-                                  color: _statusColor,
-                                  size: 28,
-                                ),
-                              const SizedBox(width: 12),
-                              Flexible(
-                                child: Text(
-                                  _verificationStatus,
-                                  style: TextStyle(
-                                    color: _statusColor,
-                                    fontSize: 18,
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                  textAlign: TextAlign.center,
-                                ),
-                              ),
-                            ],
+                          _buildToggleButton(
+                            label: 'Check In',
+                            icon: Icons.login,
+                            isSelected: _actionType == 'checkin',
+                            onTap: () {
+                              if (!_isProcessing && !_attendanceMarked) {
+                                setState(() => _actionType = 'checkin');
+                              }
+                            },
                           ),
-                          const SizedBox(height: 12),
-                          Text(
-                            _attendanceMarked
-                                ? 'You can go back now'
-                                : (_isProcessing
-                                      ? 'Please wait...'
-                                      : 'Center your face in the circle'),
-                            style: TextStyle(
-                              color: Colors.white.withOpacity(0.7),
-                              fontSize: 14,
-                            ),
-                            textAlign: TextAlign.center,
+                          const SizedBox(width: 4),
+                          _buildToggleButton(
+                            label: 'Check Out',
+                            icon: Icons.logout,
+                            isSelected: _actionType == 'checkout',
+                            onTap: () {
+                              if (!_isProcessing && !_attendanceMarked) {
+                                setState(() => _actionType = 'checkout');
+                              }
+                            },
                           ),
                         ],
                       ),
-                    ),
-
-                    const SizedBox(height: 20),
-                  ],
-                ),
-              ],
-            )
-          : Container(
-              color: const Color(0xFF0f172a),
-              child: const Center(
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    CircularProgressIndicator(color: Colors.white),
-                    SizedBox(height: 24),
-                    Text(
-                      'Initializing camera...',
-                      style: TextStyle(color: Colors.white, fontSize: 16),
                     ),
                   ],
                 ),
               ),
+
+              const SizedBox(height: 40),
+
+              // Face scanning area
+              Center(
+                child: Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    // Scanning animation
+                    if (!_attendanceMarked)
+                      AnimatedBuilder(
+                        animation: _scanController,
+                        builder: (context, child) {
+                          return Container(
+                            width: 280,
+                            height: 350,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              border: Border.all(
+                                color: Colors.white.withOpacity(
+                                  0.3 * (1 - _scanController.value),
+                                ),
+                                width: 2,
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+
+                    // Face guide
+                    AnimatedContainer(
+                      duration: const Duration(milliseconds: 300),
+                      width: 260,
+                      height: 330,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        border: Border.all(
+                          color: _attendanceMarked
+                              ? const Color(0xFF10b981)
+                              : (_faceDetected
+                              ? const Color(0xFF10b981)
+                              : Colors.white),
+                          width: 3,
+                        ),
+                        boxShadow: [
+                          BoxShadow(
+                            color: (_attendanceMarked || _faceDetected
+                                ? const Color(0xFF10b981)
+                                : Colors.white)
+                                .withOpacity(0.5),
+                            blurRadius: 30,
+                            spreadRadius: 5,
+                          ),
+                        ],
+                      ),
+                      child: _attendanceMarked
+                          ? const Icon(
+                        Icons.check_circle,
+                        size: 100,
+                        color: Color(0xFF10b981),
+                      )
+                          : (_faceDetected
+                          ? const Icon(
+                        Icons.face,
+                        size: 80,
+                        color: Color(0xFF10b981),
+                      )
+                          : null),
+                    ),
+                  ],
+                ),
+              ),
+
+              const Spacer(),
+
+              // Status card
+              Container(
+                margin: const EdgeInsets.all(24),
+                padding: const EdgeInsets.all(24),
+                decoration: BoxDecoration(
+                  color: Colors.black.withOpacity(0.6),
+                  borderRadius: BorderRadius.circular(24),
+                  border: Border.all(
+                    color: Colors.white.withOpacity(0.1),
+                    width: 1,
+                  ),
+                ),
+                child: Column(
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        if (_isProcessing)
+                          Container(
+                            width: 24,
+                            height: 24,
+                            margin: const EdgeInsets.only(right: 12),
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              valueColor: AlwaysStoppedAnimation<Color>(
+                                _statusColor,
+                              ),
+                            ),
+                          )
+                        else
+                          Icon(
+                            _attendanceMarked
+                                ? Icons.check_circle
+                                : (_faceDetected
+                                ? Icons.verified_user
+                                : Icons.face_outlined),
+                            color: _statusColor,
+                            size: 28,
+                          ),
+                        const SizedBox(width: 12),
+                        Flexible(
+                          child: Text(
+                            _verificationStatus,
+                            style: TextStyle(
+                              color: _statusColor,
+                              fontSize: 18,
+                              fontWeight: FontWeight.w600,
+                            ),
+                            textAlign: TextAlign.center,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                      _attendanceMarked
+                          ? 'You can go back now'
+                          : (_isProcessing
+                          ? 'Please wait...'
+                          : 'Center your face in the circle'),
+                      style: TextStyle(
+                        color: Colors.white.withOpacity(0.7),
+                        fontSize: 14,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                  ],
+                ),
+              ),
+
+              const SizedBox(height: 20),
+            ],
+          ),
+        ],
+      )
+          : Container(
+        color: const Color(0xFF0f172a),
+        child: const Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              CircularProgressIndicator(color: Colors.white),
+              SizedBox(height: 24),
+              Text(
+                'Initializing camera...',
+                style: TextStyle(color: Colors.white, fontSize: 16),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildToggleButton({
+    required String label,
+    required IconData icon,
+    required bool isSelected,
+    required VoidCallback onTap,
+  }) {
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+        decoration: BoxDecoration(
+          color: isSelected
+              ? Colors.white
+              : Colors.transparent,
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              icon,
+              size: 18,
+              color: isSelected
+                  ? const Color(0xFF0f172a)
+                  : Colors.white.withOpacity(0.7),
             ),
+            const SizedBox(width: 8),
+            Text(
+              label,
+              style: TextStyle(
+                color: isSelected
+                    ? const Color(0xFF0f172a)
+                    : Colors.white.withOpacity(0.7),
+                fontSize: 14,
+                fontWeight: isSelected ? FontWeight.w600 : FontWeight.w500,
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
