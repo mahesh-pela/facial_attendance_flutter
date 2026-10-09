@@ -1,8 +1,7 @@
-import 'dart:convert';
+
 import 'dart:typed_data';
 import 'dart:io';
 import 'dart:math' as math;
-import 'package:face_attendance/manager/dioErrorManager.dart';
 import 'package:face_attendance/manager/mydio.dart';
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
